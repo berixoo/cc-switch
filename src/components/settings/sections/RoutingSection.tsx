@@ -27,6 +27,7 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
+import { PromptRewriterPanel } from "@/extensions/prompt-rewriter/PromptRewriterPanel";
 import { APP_DISPLAY_NAME, AppGlyph } from "@/components/shell/AppGlyph";
 import { MODE_TONE } from "@/components/providers/mode/ModeTabs";
 import {
@@ -455,6 +456,8 @@ export function RoutingSection({ onOpenApp }: RoutingSectionProps) {
           <RectifierConfigPanel />
         </div>
       </SettingsBlock>
+
+      <PromptRewriterPanel />
 
       {/* 可恢复的操作（路由目标、队列、聚合名单都保留），不用红色 */}
       <ConfirmDialog

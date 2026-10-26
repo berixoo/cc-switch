@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import { MODELS_DEV_API_URL } from "@/lib/modelsDev";
+import type { Status as PromptRewriterStatus } from "@/extensions/prompt-rewriter/types";
 import type { McpServer, Provider, Settings } from "@/types";
 import {
   addProvider,
@@ -46,7 +47,71 @@ const withJson = async <T>(request: Request): Promise<T> => {
 
 const success = <T>(payload: T) => HttpResponse.json(payload as any);
 
+// Ordinary builds expose the complete v2 shape without enabling the extension.
+const promptRewriterUnavailable = (): PromptRewriterStatus => {
+  const route = () => ({
+    enabled: false,
+    system: { enabled: false, replacement: null },
+    userInstructions: { enabled: false, replacement: null, sourcePath: null },
+  });
+  const source = () => ({
+    path: null,
+    content: null,
+    state: "missing" as const,
+    error: null,
+    loadedAt: null,
+  });
+  const observation = () => ({
+    state: "notCaptured" as const,
+    system: null,
+    providerId: null,
+    model: null,
+    format: null,
+    requestId: null,
+    capturedAt: null,
+    fileStatus: "unknown" as const,
+    systemApplied: false,
+    userApplied: false,
+    error: null,
+  });
+  return {
+    available: false,
+    config: {
+      version: 2,
+      enabled: false,
+      routes: { claudeCode: route(), claudeDesktop: route() },
+    },
+    path: "",
+    error: null,
+    sources: { claudeCode: source(), claudeDesktop: source() },
+    observations: {
+      claudeCode: observation(),
+      claudeDesktop: observation(),
+    },
+  };
+};
+
 export const handlers = [
+  ...["get", "save", "reload", "refresh_sources", "capture"].map((command) =>
+    http.post(`${TAURI_ENDPOINT}/prompt_rewriter_${command}`, () =>
+      success(promptRewriterUnavailable()),
+    ),
+  ),
+  http.post(
+    `${TAURI_ENDPOINT}/prompt_rewriter_preview`,
+    async ({ request }) => {
+      const { body } = await withJson<{ body: unknown }>(request);
+      return success({
+        body: body ?? null,
+        systemBefore: null,
+        systemAfter: null,
+        fileStatus: "unknown",
+        systemApplied: false,
+        userApplied: false,
+        reason: "Prompt rewriting is not available in this build.",
+      });
+    },
+  ),
   http.get(MODELS_DEV_API_URL, () => success({})),
   http.post(`${TAURI_ENDPOINT}/get_migration_result`, () => success(false)),
   http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () =>

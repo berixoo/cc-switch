@@ -16,6 +16,7 @@ mod config;
 mod database;
 mod deeplink;
 mod error;
+mod extensions;
 mod gemini_config;
 mod gemini_mcp;
 mod grok_config;
@@ -572,6 +573,7 @@ pub fn run() {
             // 首次读取覆盖路径时 logger 尚未可用；此处重放一次，
             // 让 Store 损坏或路径无效等启动警告能够真正落盘。
             let _ = app_store::refresh_app_config_dir_override(app.handle());
+            app.manage(extensions::prompt_rewriter::PromptRewriter::load());
 
             #[cfg(target_os = "windows")]
             set_windows_app_user_model_id(app.handle());
@@ -1515,6 +1517,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            extensions::prompt_rewriter::commands::prompt_rewriter_get,
+            extensions::prompt_rewriter::commands::prompt_rewriter_save,
+            extensions::prompt_rewriter::commands::prompt_rewriter_reload,
+            extensions::prompt_rewriter::commands::prompt_rewriter_preview,
+            extensions::prompt_rewriter::commands::prompt_rewriter_refresh_sources,
+            extensions::prompt_rewriter::commands::prompt_rewriter_capture,
             commands::get_providers,
             commands::get_current_provider,
             commands::add_provider,
