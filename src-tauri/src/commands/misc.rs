@@ -111,6 +111,7 @@ pub async fn open_portable_update_download(
     handle: AppHandle,
     version: String,
 ) -> Result<bool, String> {
+    crate::extensions::prompt_rewriter::ensure_custom_update_allowed()?;
     let url = portable_zip_url(&version, cfg!(target_arch = "aarch64"))
         .unwrap_or_else(|| "https://github.com/farion1231/cc-switch/releases/latest".to_string());
     handle

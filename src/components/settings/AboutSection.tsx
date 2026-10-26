@@ -15,13 +15,19 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
 import { getVersion } from "@tauri-apps/api/app";
+import { useQuery } from "@tanstack/react-query";
 import { settingsApi } from "@/lib/api";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { Badge } from "@/components/ui/badge";
 import { WhatsNewDialog } from "@/components/WhatsNewDialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { WHATS_NEW_ENTRIES, entriesUpTo } from "@/lib/whatsNew";
 import ccswitchLogo from "@/assets/icons/logo.svg";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  promptRewriterApi,
+  promptRewriterKeys,
+} from "@/extensions/prompt-rewriter/api";
 
 interface AboutSectionProps {
   isPortable: boolean;
@@ -47,6 +53,11 @@ function readStarPromptDismissed(): boolean {
  */
 export function AboutSection({ isPortable }: AboutSectionProps) {
   const { t } = useTranslation();
+  const { data: buildStatus } = useQuery({
+    queryKey: promptRewriterKeys.status,
+    queryFn: promptRewriterApi.get,
+  });
+  const isCustomBuild = buildStatus?.available === true;
   // 惰性初始化自模块缓存：重挂时首帧即渲染上次的值，避免 loading 闪烁；首次挂载缓存
   // 为空则回退到原始初值（null / loading）。
   const [version, setVersion] = useState<string | null>(() => appVersionCache);
@@ -55,6 +66,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   );
   const [isDownloading, setIsDownloading] = useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const [updateBlockedOpen, setUpdateBlockedOpen] = useState(false);
   const [starPromptDismissed, setStarPromptDismissed] = useState(
     readStarPromptDismissed,
   );
@@ -132,6 +144,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   }, []);
 
   const handleCheckUpdate = useCallback(async () => {
+    if (hasUpdate && isCustomBuild) {
+      // Official update notices still arrive; installing one would replace this binary and drop
+      // the extension, so the action opens an explanation instead of downloading anything.
+      setUpdateBlockedOpen(true);
+      return;
+    }
     if (hasUpdate) {
       if (isPortable) {
         try {
@@ -186,6 +204,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   }, [
     checkUpdate,
     hasUpdate,
+    isCustomBuild,
     isPortable,
     resetDismiss,
     t,
@@ -210,6 +229,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <span className="tabular-nums">{`${t("common.version")} v${displayVersion}`}</span>
+            )}
+            {isCustomBuild && (
+              <Badge variant="secondary" className="px-1.5 py-0 text-badge">
+                {t("promptRewriter.customBuild")}
+              </Badge>
             )}
             {isPortable && (
               <Badge
@@ -237,9 +261,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           ) : hasUpdate ? (
             <>
               <Download className="h-3.5 w-3.5" />
-              {t("settings.updateTo", {
-                version: updateInfo?.availableVersion ?? "",
-              })}
+              {isCustomBuild
+                ? t("promptRewriter.updateSource")
+                : t("settings.updateTo", {
+                    version: updateInfo?.availableVersion ?? "",
+                  })}
             </>
           ) : isChecking ? (
             <>
@@ -265,9 +291,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           {updateInfo.notes && (
             <p className="line-clamp-3 text-fg-2">{updateInfo.notes}</p>
           )}
-          {isPortable && (
+          {isCustomBuild ? (
+            <p className="text-fg-2">
+              {t("promptRewriter.rebuildInstruction")}
+            </p>
+          ) : isPortable ? (
             <p className="text-fg-2">{t("settings.portableUpdateHint")}</p>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -350,6 +380,23 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        isOpen={updateBlockedOpen}
+        variant="info"
+        title={t("promptRewriter.updateBlockedTitle")}
+        message={`${t("promptRewriter.updateRequiresRebuild")}\n\n${t(
+          "promptRewriter.updateBlockedDetail",
+          { version: updateInfo?.availableVersion ?? "" },
+        )}\n\n${t("promptRewriter.rebuildInstruction")}`}
+        confirmText={t("promptRewriter.openReleaseNotes")}
+        cancelText={t("promptRewriter.updateBlockedDismiss")}
+        onConfirm={() => {
+          setUpdateBlockedOpen(false);
+          void handleOpenReleaseNotes();
+        }}
+        onCancel={() => setUpdateBlockedOpen(false)}
+      />
 
       <WhatsNewDialog
         open={whatsNewOpen}

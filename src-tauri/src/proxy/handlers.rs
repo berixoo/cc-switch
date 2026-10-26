@@ -48,6 +48,7 @@ use super::{
 };
 use crate::app_config::AppType;
 use crate::database::PRICING_SOURCE_REQUEST;
+use crate::extensions::prompt_rewriter::{self, Route};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use futures::StreamExt;
@@ -324,11 +325,20 @@ async fn handle_messages_for_app(
         .to_bytes();
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+    let prompt_route = match app_type {
+        AppType::Claude => Route::ClaudeCode,
+        AppType::ClaudeDesktop => Route::ClaudeDesktop,
+        _ => unreachable!("messages handler only accepts Claude applications"),
+    };
+    let compact = super::copilot_optimizer::classify_request(&body, false, true, false).is_compact;
+    let prompt_rewrite =
+        prompt_rewriter::begin_request(state.app_handle.as_ref(), prompt_route, compact)
+            .map_err(ProxyError::InvalidRequest)?
+            .map(|context| context.with_client_model(&body));
     let stack = match resolve_stack_target(&state, &app_type, &mut body) {
         Ok(stack) => stack,
         Err(rejected) => return Ok(*rejected),
     };
-
     let mut ctx = RequestContext::new(
         &state,
         &body,
@@ -354,7 +364,7 @@ async fn handle_messages_for_app(
         .unwrap_or(false);
 
     // 转发请求
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).prompt_rewrite(prompt_rewrite);
     let mut result = match forwarder
         .forward_with_retry(
             &app_type,
@@ -1049,11 +1059,12 @@ async fn handle_responses_for_app(
     let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+    let codex_tool_context = transform_codex_chat::build_codex_tool_context_from_request(&body);
+    let compaction_request = codex_tool_context.is_compaction_request();
     let stack = match resolve_stack_target(&state, &app_type, &mut body) {
         Ok(stack) => stack,
         Err(rejected) => return Ok(*rejected),
     };
-
     let mut ctx = RequestContext::new(
         &state,
         &body,
@@ -1070,8 +1081,6 @@ async fn handle_responses_for_app(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let codex_tool_context = transform_codex_chat::build_codex_tool_context_from_request(&body);
-    let compaction_request = codex_tool_context.is_compaction_request();
     // Captured before `body` is moved into the forwarder: the flat-name →
     // {namespace, name} map used to restore the native Responses upstream's
     // function-call names (see the namespace-restore dispatch below).

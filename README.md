@@ -22,6 +22,65 @@ English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](README_
 
 </div>
 
+---
+
+## 🧩 本仓库说明 / About this build
+
+> **这是个人自定义构建（fork），不是官方项目。** 官方仓库：[farion1231/cc-switch](https://github.com/farion1231/cc-switch) · 官网：[ccswitch.io](https://ccswitch.io)
+>
+> This repository is a personal custom build, not the official CC Switch project.
+
+在官方 **4.0.20** 的基础上，本仓库额外加入了**请求级提示词全文替换**（Prompt Rewriter）。官方原有的供应商管理、MCP、Skills、Prompts、路由与协议转换全部保留。
+
+_Built on top of upstream 4.0.20, adding request-level prompt full-text replacement. Everything else from upstream is unchanged._
+
+### 功能 / What it adds
+
+- **两条独立路由**：Claude Code CLI 与 Claude Desktop，各自保存开关、替换全文和源路径。
+- **两类目标**：系统提示词全文替换；用户级指令文件（默认 `~/.claude/CLAUDE.md`）全文替换。只做整体替换，没有匹配串或正则。
+- **旧会话同样生效**：恢复或压缩过的会话里，客户端重放的是会话开始时的文件快照，会被识别并替换；请求里完全没有该文件的封装时，改为在请求内新增一条独立的用户级指令（幂等，不会重复添加）。
+- **只改代理请求**：不写回源文件，不修改官方配置或数据库。扩展配置单独放在 `<配置目录>/extensions/prompt-rewriter.json`。
+- **可核对**：面板会显示每次请求里"系统替换 / 用户级指令替换"是否真的应用，以及未应用的原因。
+
+_Request-level full-text replacement for the system prompt and the user-level `CLAUDE.md`, for both Claude Code CLI and Claude Desktop. Old/resumed conversations are covered; when the request carries no envelope for that file, the replacement is added as a standalone user-level instruction message. Source files and upstream config are never written._
+
+### 下载 / Download
+
+只从本仓库的 [Releases](../../releases) 获取。发布物是**自包含单文件** `cc-switch.exe`：
+
+- 不需要 `WebView2Loader.dll` 或 `liblzma-5.dll`（已静态链接），需要系统的 WebView2 Runtime（Windows 11 自带）。
+- 没有安装器，也没有卸载程序：移除时直接删除该文件。
+- 继续使用官方配置目录，无需重新配置供应商。
+
+_Download the self-contained `cc-switch.exe` from this repo's Releases. No companion DLLs, no installer, no uninstaller — just delete the file to remove it._
+
+### 更新策略 / Update policy
+
+关于页仍会正常检查和显示官方新版本，但**不会执行更新**：点击更新会弹出说明，后端安装命令同样拒绝。直接用官方二进制覆盖会丢失本扩展。
+
+升级方式 —— 同步官方源码后带 feature 重建：
+
+```bash
+pnpm install --frozen-lockfile
+RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc pnpm tauri build --features prompt-rewriter --no-bundle
+```
+
+用 MSVC 而不是仓库默认的 GNU 工具链，才能得到自包含单文件；GNU 构建会额外需要 `WebView2Loader.dll` 和 `liblzma-5.dll`。
+
+_Update notices still work, but installing an official build is blocked on purpose. Rebuild from source with the `prompt-rewriter` feature to upgrade._
+
+同步上游 / Sync with upstream:
+
+```bash
+git remote add upstream https://github.com/farion1231/cc-switch.git
+git fetch upstream
+git merge upstream/main
+```
+
+实现与验证细节见 [docs/prompt-rewriter.md](docs/prompt-rewriter.md)。
+
+---
+
 ## ❤️Sponsor
 
 > [Want to appear here?](mailto:support@ccswitch.io)
