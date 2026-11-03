@@ -16,6 +16,7 @@ import zhTW from "@/i18n/locales/zh-TW.json";
 import ja from "@/i18n/locales/ja.json";
 import tr from "@/i18n/locales/tr.json";
 import { PromptRewriterPanel } from "@/extensions/prompt-rewriter/PromptRewriterPanel";
+import { discardUnsavedChanges, hasUnsavedChanges } from "@/lib/unsavedChanges";
 import {
   promptRewriterApi,
   promptRewriterKeys,
@@ -30,7 +31,6 @@ import type {
   Source,
   Status,
 } from "@/extensions/prompt-rewriter/types";
-import { hasUnsavedChanges } from "@/lib/unsavedChanges";
 import { server } from "../msw/server";
 
 const ENDPOINT = "http://tauri.local";
@@ -143,6 +143,8 @@ function original(target: "system" | "userInstructions") {
   return screen.getByLabelText(text.originals[target]);
 }
 function edit(target: "system" | "userInstructions", value: string) {
+  // Real typing fires `input` before `change`; upstream registers edits from `input` events.
+  fireEvent.input(editor(target), { target: { value } });
   fireEvent.change(editor(target), { target: { value } });
 }
 function click(name: string) {
@@ -216,6 +218,8 @@ beforeEach(async () => {
 });
 afterEach(() => {
   clients.splice(0).forEach((client) => client.clear());
+  // The dirty registry is module state; clear it so cases cannot leak into each other.
+  discardUnsavedChanges();
 });
 
 describe("PromptRewriterPanel full-text editing", () => {
