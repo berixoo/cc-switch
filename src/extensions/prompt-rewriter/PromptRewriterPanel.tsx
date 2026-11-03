@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -53,6 +53,18 @@ function originalsFrom(status: Status): Originals {
   ) as Originals;
 }
 
+/**
+ * Upstream clears a dirty registration when its tracking scope unmounts. Remounting this scope
+ * is therefore how the panel releases the mark after a save, a discard, or a revert to clean.
+ */
+function UnsavedChangesScope({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="contents" {...useUnsavedChangesTracker()}>
+      {children}
+    </div>
+  );
+}
+
 function FieldSelect<T extends string>({
   label,
   value,
@@ -66,7 +78,9 @@ function FieldSelect<T extends string>({
 }) {
   const id = useId();
   return (
-    <div className="min-w-0 space-y-1.5">
+    // Picking a route or a preview format only changes what is displayed, so it must not
+    // register as an unsaved edit.
+    <div className="min-w-0 space-y-1.5" data-unsaved-ignore>
       <Label htmlFor={id}>{label}</Label>
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger id={id} aria-label={label}>
@@ -74,7 +88,11 @@ function FieldSelect<T extends string>({
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
+            <SelectItem
+              key={option.value}
+              value={option.value}
+              data-unsaved-ignore
+            >
               {option.label}
             </SelectItem>
           ))}
@@ -115,10 +133,14 @@ export function PromptRewriterPanel() {
   const [body, setBody] = useState("{}");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const id = useId();
-  const { onInputCapture: markDirty } = useUnsavedChangesTracker(dirty);
+  // Bumping this epoch remounts the tracking scope, which releases the dirty registration
+  // after a save, a discard, or a revert back to the saved config.
+  const [trackerEpoch, setTrackerEpoch] = useState(0);
+  const wasDirty = useRef(false);
   useEffect(() => {
-    if (dirty) markDirty();
-  }, [dirty, markDirty]);
+    if (wasDirty.current && !dirty) setTrackerEpoch((epoch) => epoch + 1);
+    wasDirty.current = dirty;
+  }, [dirty]);
   useEffect(() => {
     if (!dirty) return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -450,239 +472,245 @@ export function PromptRewriterPanel() {
   };
 
   return (
-    <SettingsBlock title={t("promptRewriter.title")}>
-      {status.isError && (
-        <div className="space-y-2">
-          <p role="alert" className="text-caption text-danger-text">
-            {t("promptRewriter.loadFailed", { error: errorText(status.error) })}
-          </p>
-          <Button
-            variant="neutral"
-            disabled={status.isFetching}
-            onClick={() => void status.refetch()}
-          >
-            {t("promptRewriter.retry")}
-          </Button>
-        </div>
-      )}
-      {draft && status.data?.available && (
-        <>
-          <p className="text-caption text-fg-2">
-            {t("promptRewriter.scopeHint")}
-          </p>
-          <fieldset disabled={busy} className="min-w-0 space-y-3">
-            <SettingsCard>
-              <SettingsSwitchRow
-                label={t("promptRewriter.enabled")}
-                checked={draft.enabled}
-                onCheckedChange={(enabled) => change({ ...draft, enabled })}
-              />
-              <SettingsRow
-                label={t("promptRewriter.configPath")}
-                description={status.data.path}
-              />
-            </SettingsCard>
-            {status.data.error && (
-              <p role="alert" className="text-caption text-danger-text">
-                {t("promptRewriter.configError", { error: status.data.error })}
-              </p>
-            )}
-            <FieldSelect
-              label={t("promptRewriter.route")}
-              value={route}
-              options={ROUTES.map((value) => ({
-                value,
-                label: t(`promptRewriter.routes.${value}`),
-              }))}
-              onChange={(value) => {
-                setRoute(value);
-                preview.reset();
-                setJsonError(null);
-              }}
-            />
-            <SettingsCard>
-              <SettingsSwitchRow
-                label={t("promptRewriter.routeEnabled")}
-                checked={draft.routes[route].enabled}
-                onCheckedChange={(enabled) => changeRoute({ enabled })}
-              />
-            </SettingsCard>
-            {renderEditor("system")}
-            {renderEditor("userInstructions")}
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="solid"
-                disabled={!dirty && !status.data.error}
-                onClick={() => {
-                  setSavedAt(null);
-                  save.mutate(draft);
-                }}
-              >
-                {t("promptRewriter.save")}
-              </Button>
-              <Button
-                variant="neutral"
-                onClick={() => requestAction({ kind: "reload" })}
-              >
-                {t("promptRewriter.reload")}
-              </Button>
-              <span role="status" className="text-caption text-fg-2">
-                {t(
-                  dirty
-                    ? "promptRewriter.dirty"
-                    : saved
-                      ? "promptRewriter.saved"
-                      : "promptRewriter.loaded",
-                )}
-              </span>
-            </div>
-          </fieldset>
-          {(
-            [
-              [save, "saveFailed"],
-              [reload, "reloadFailed"],
-              [refresh, "refreshFailed"],
-              [capture, "captureFailed"],
-            ] as const
-          ).map(
-            ([mutation, key]) =>
-              mutation.isError && (
-                <p
-                  key={key}
-                  role="alert"
-                  className="text-caption text-danger-text"
-                >
-                  {t(`promptRewriter.${key}`, {
-                    error: errorText(mutation.error),
+    <UnsavedChangesScope key={trackerEpoch}>
+      <SettingsBlock title={t("promptRewriter.title")}>
+        {status.isError && (
+          <div className="space-y-2">
+            <p role="alert" className="text-caption text-danger-text">
+              {t("promptRewriter.loadFailed", {
+                error: errorText(status.error),
+              })}
+            </p>
+            <Button
+              variant="neutral"
+              disabled={status.isFetching}
+              onClick={() => void status.refetch()}
+            >
+              {t("promptRewriter.retry")}
+            </Button>
+          </div>
+        )}
+        {draft && status.data?.available && (
+          <>
+            <p className="text-caption text-fg-2">
+              {t("promptRewriter.scopeHint")}
+            </p>
+            <fieldset disabled={busy} className="min-w-0 space-y-3">
+              <SettingsCard>
+                <SettingsSwitchRow
+                  label={t("promptRewriter.enabled")}
+                  checked={draft.enabled}
+                  onCheckedChange={(enabled) => change({ ...draft, enabled })}
+                />
+                <SettingsRow
+                  label={t("promptRewriter.configPath")}
+                  description={status.data.path}
+                />
+              </SettingsCard>
+              {status.data.error && (
+                <p role="alert" className="text-caption text-danger-text">
+                  {t("promptRewriter.configError", {
+                    error: status.data.error,
                   })}
                 </p>
-              ),
-          )}
-          <details className="space-y-3 rounded-panel border border-border bg-surface p-4">
-            <summary className="cursor-pointer text-body font-medium text-fg-1">
-              {t("promptRewriter.preview")}
-            </summary>
-            <fieldset disabled={busy} className="min-w-0 space-y-3">
-              <p className="text-caption text-fg-2">
-                {t("promptRewriter.previewHint")}
-              </p>
-              <p className="text-caption text-fg-2">
-                {t("promptRewriter.route")}:{" "}
-                {t(`promptRewriter.routes.${route}`)}
-              </p>
-              <p className="text-caption text-fg-2">
-                {t("promptRewriter.format")}:{" "}
-                {t(`promptRewriter.formats.${format}`)}
-              </p>
-              <Label htmlFor={`${id}-body`}>{t("promptRewriter.body")}</Label>
-              <Textarea
-                id={`${id}-body`}
-                className="min-h-[160px] font-mono text-xs"
-                value={body}
-                aria-invalid={!!jsonError}
-                onChange={(event) => {
-                  setBody(event.target.value);
-                  setJsonError(null);
+              )}
+              <FieldSelect
+                label={t("promptRewriter.route")}
+                value={route}
+                options={ROUTES.map((value) => ({
+                  value,
+                  label: t(`promptRewriter.routes.${value}`),
+                }))}
+                onChange={(value) => {
+                  setRoute(value);
                   preview.reset();
+                  setJsonError(null);
                 }}
               />
-              <Button variant="neutral" onClick={startPreview}>
-                {t("promptRewriter.runPreview")}
-              </Button>
-            </fieldset>
-            {jsonError && (
-              <p role="alert" className="text-caption text-danger-text">
-                {t("promptRewriter.invalidJson", { error: jsonError })}
-              </p>
-            )}
-            {preview.isError && (
-              <p role="alert" className="text-caption text-danger-text">
-                {t("promptRewriter.previewFailed", {
-                  error: errorText(preview.error),
-                })}
-              </p>
-            )}
-            {preview.data && (
-              <div className="space-y-3">
-                <label className="block space-y-1.5 text-body text-fg-1">
-                  <span>{t("promptRewriter.result")}</span>
-                  <Textarea
-                    readOnly
-                    className="min-h-[160px] font-mono text-xs"
-                    value={JSON.stringify(preview.data.body, null, 2)}
-                  />
-                </label>
-                <label className="block space-y-1.5 text-body text-fg-1">
-                  <span>{t("promptRewriter.systemBefore")}</span>
-                  <Textarea
-                    readOnly
-                    value={preview.data.systemBefore ?? ""}
-                    placeholder={t("promptRewriter.notAvailable")}
-                  />
-                </label>
-                <label className="block space-y-1.5 text-body text-fg-1">
-                  <span>{t("promptRewriter.systemAfter")}</span>
-                  <Textarea
-                    readOnly
-                    value={preview.data.systemAfter ?? ""}
-                    placeholder={t("promptRewriter.notAvailable")}
-                  />
-                </label>
-                <p className="text-caption text-fg-2">
-                  {t("promptRewriter.fileIdentification")}:{" "}
-                  {t(`promptRewriter.fileStates.${preview.data.fileStatus}`)}
-                </p>
-                <p className="text-caption text-fg-2">
-                  {t("promptRewriter.systemApplication")}:{" "}
+              <SettingsCard>
+                <SettingsSwitchRow
+                  label={t("promptRewriter.routeEnabled")}
+                  checked={draft.routes[route].enabled}
+                  onCheckedChange={(enabled) => changeRoute({ enabled })}
+                />
+              </SettingsCard>
+              {renderEditor("system")}
+              {renderEditor("userInstructions")}
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  variant="solid"
+                  disabled={!dirty && !status.data.error}
+                  onClick={() => {
+                    setSavedAt(null);
+                    save.mutate(draft);
+                  }}
+                >
+                  {t("promptRewriter.save")}
+                </Button>
+                <Button
+                  variant="neutral"
+                  onClick={() => requestAction({ kind: "reload" })}
+                >
+                  {t("promptRewriter.reload")}
+                </Button>
+                <span role="status" className="text-caption text-fg-2">
                   {t(
-                    preview.data.systemApplied
-                      ? "promptRewriter.applied"
-                      : "promptRewriter.notApplied",
+                    dirty
+                      ? "promptRewriter.dirty"
+                      : saved
+                        ? "promptRewriter.saved"
+                        : "promptRewriter.loaded",
                   )}
-                </p>
-                <p className="text-caption text-fg-2">
-                  {t("promptRewriter.userApplication")}:{" "}
-                  {t(
-                    preview.data.userApplied
-                      ? "promptRewriter.applied"
-                      : "promptRewriter.notApplied",
-                  )}
-                </p>
-                {preview.data.reason && (
-                  <p className="text-caption text-fg-2">
-                    {t("promptRewriter.reason")}: {preview.data.reason}
-                  </p>
-                )}
+                </span>
               </div>
+            </fieldset>
+            {(
+              [
+                [save, "saveFailed"],
+                [reload, "reloadFailed"],
+                [refresh, "refreshFailed"],
+                [capture, "captureFailed"],
+              ] as const
+            ).map(
+              ([mutation, key]) =>
+                mutation.isError && (
+                  <p
+                    key={key}
+                    role="alert"
+                    className="text-caption text-danger-text"
+                  >
+                    {t(`promptRewriter.${key}`, {
+                      error: errorText(mutation.error),
+                    })}
+                  </p>
+                ),
             )}
-          </details>
-          <ConfirmDialog
-            isOpen={confirmation !== null}
-            variant="info"
-            title={t(
-              confirmation?.kind === "reload"
-                ? "promptRewriter.reloadTitle"
-                : "promptRewriter.replaceTitle",
-            )}
-            message={t(
-              confirmation?.kind === "reload"
-                ? "promptRewriter.reloadMessage"
-                : "promptRewriter.replaceMessage",
-            )}
-            confirmText={t(
-              confirmation?.kind === "reload"
-                ? "promptRewriter.discardReload"
-                : "promptRewriter.replaceConfirm",
-            )}
-            cancelText={t("promptRewriter.keepEditing")}
-            onConfirm={() => {
-              if (confirmation) perform(confirmation);
-              setConfirmation(null);
-            }}
-            onCancel={() => setConfirmation(null)}
-          />
-        </>
-      )}
-    </SettingsBlock>
+            <details className="space-y-3 rounded-panel border border-border bg-surface p-4">
+              <summary className="cursor-pointer text-body font-medium text-fg-1">
+                {t("promptRewriter.preview")}
+              </summary>
+              <fieldset disabled={busy} className="min-w-0 space-y-3">
+                <p className="text-caption text-fg-2">
+                  {t("promptRewriter.previewHint")}
+                </p>
+                <p className="text-caption text-fg-2">
+                  {t("promptRewriter.route")}:{" "}
+                  {t(`promptRewriter.routes.${route}`)}
+                </p>
+                <p className="text-caption text-fg-2">
+                  {t("promptRewriter.format")}:{" "}
+                  {t(`promptRewriter.formats.${format}`)}
+                </p>
+                <Label htmlFor={`${id}-body`}>{t("promptRewriter.body")}</Label>
+                <Textarea
+                  id={`${id}-body`}
+                  className="min-h-[160px] font-mono text-xs"
+                  value={body}
+                  aria-invalid={!!jsonError}
+                  onChange={(event) => {
+                    setBody(event.target.value);
+                    setJsonError(null);
+                    preview.reset();
+                  }}
+                />
+                <Button variant="neutral" onClick={startPreview}>
+                  {t("promptRewriter.runPreview")}
+                </Button>
+              </fieldset>
+              {jsonError && (
+                <p role="alert" className="text-caption text-danger-text">
+                  {t("promptRewriter.invalidJson", { error: jsonError })}
+                </p>
+              )}
+              {preview.isError && (
+                <p role="alert" className="text-caption text-danger-text">
+                  {t("promptRewriter.previewFailed", {
+                    error: errorText(preview.error),
+                  })}
+                </p>
+              )}
+              {preview.data && (
+                <div className="space-y-3">
+                  <label className="block space-y-1.5 text-body text-fg-1">
+                    <span>{t("promptRewriter.result")}</span>
+                    <Textarea
+                      readOnly
+                      className="min-h-[160px] font-mono text-xs"
+                      value={JSON.stringify(preview.data.body, null, 2)}
+                    />
+                  </label>
+                  <label className="block space-y-1.5 text-body text-fg-1">
+                    <span>{t("promptRewriter.systemBefore")}</span>
+                    <Textarea
+                      readOnly
+                      value={preview.data.systemBefore ?? ""}
+                      placeholder={t("promptRewriter.notAvailable")}
+                    />
+                  </label>
+                  <label className="block space-y-1.5 text-body text-fg-1">
+                    <span>{t("promptRewriter.systemAfter")}</span>
+                    <Textarea
+                      readOnly
+                      value={preview.data.systemAfter ?? ""}
+                      placeholder={t("promptRewriter.notAvailable")}
+                    />
+                  </label>
+                  <p className="text-caption text-fg-2">
+                    {t("promptRewriter.fileIdentification")}:{" "}
+                    {t(`promptRewriter.fileStates.${preview.data.fileStatus}`)}
+                  </p>
+                  <p className="text-caption text-fg-2">
+                    {t("promptRewriter.systemApplication")}:{" "}
+                    {t(
+                      preview.data.systemApplied
+                        ? "promptRewriter.applied"
+                        : "promptRewriter.notApplied",
+                    )}
+                  </p>
+                  <p className="text-caption text-fg-2">
+                    {t("promptRewriter.userApplication")}:{" "}
+                    {t(
+                      preview.data.userApplied
+                        ? "promptRewriter.applied"
+                        : "promptRewriter.notApplied",
+                    )}
+                  </p>
+                  {preview.data.reason && (
+                    <p className="text-caption text-fg-2">
+                      {t("promptRewriter.reason")}: {preview.data.reason}
+                    </p>
+                  )}
+                </div>
+              )}
+            </details>
+            <ConfirmDialog
+              isOpen={confirmation !== null}
+              variant="info"
+              title={t(
+                confirmation?.kind === "reload"
+                  ? "promptRewriter.reloadTitle"
+                  : "promptRewriter.replaceTitle",
+              )}
+              message={t(
+                confirmation?.kind === "reload"
+                  ? "promptRewriter.reloadMessage"
+                  : "promptRewriter.replaceMessage",
+              )}
+              confirmText={t(
+                confirmation?.kind === "reload"
+                  ? "promptRewriter.discardReload"
+                  : "promptRewriter.replaceConfirm",
+              )}
+              cancelText={t("promptRewriter.keepEditing")}
+              onConfirm={() => {
+                if (confirmation) perform(confirmation);
+                setConfirmation(null);
+              }}
+              onCancel={() => setConfirmation(null)}
+            />
+          </>
+        )}
+      </SettingsBlock>
+    </UnsavedChangesScope>
   );
 }
