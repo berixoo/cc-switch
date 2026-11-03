@@ -282,9 +282,16 @@ describe("PromptRewriterPanel full-text editing", () => {
     fireEvent.click(
       screen.getByRole("switch", { name: text.enableTargets.userInstructions }),
     );
+    // Switches persist on their own; only the prompt bodies wait for an explicit save.
+    await waitFor(() => expect(savedConfigs.length).toBeGreaterThan(0));
+    const afterSwitches = savedConfigs.at(-1)!;
+    expect(afterSwitches.enabled).toBe(true);
+    expect(afterSwitches.routes.claudeDesktop.enabled).toBe(true);
+    expect(afterSwitches.routes.claudeDesktop.system.enabled).toBe(true);
+    const beforeEdit = savedConfigs.length;
     edit("system", "system replacement\nfull body");
     edit("userInstructions", "file replacement\nfull body");
-    expect(savedConfigs).toHaveLength(0);
+    expect(savedConfigs).toHaveLength(beforeEdit);
     expect(original("system")).toHaveValue(
       initial.observations.claudeDesktop.system,
     );
@@ -308,7 +315,7 @@ describe("PromptRewriterPanel full-text editing", () => {
         sourcePath: null,
       },
     };
-    expect(savedConfigs).toEqual([expected]);
+    expect(savedConfigs.at(-1)).toEqual(expected);
     expect(client.getQueryData(promptRewriterKeys.status)).toEqual({
       ...initial,
       config: expected,
@@ -427,6 +434,8 @@ describe("PromptRewriterPanel full-text editing", () => {
   });
 
   it("keeps CLI and Desktop drafts independent, including enabled targets and source paths", async () => {
+    // Dependent switches are inert while the master switch is off.
+    runtime.config.enabled = true;
     runtime.config.routes.claudeDesktop.enabled = true;
     runtime.config.routes.claudeDesktop.system = {
       enabled: true,
@@ -479,7 +488,8 @@ describe("PromptRewriterPanel full-text editing", () => {
     expect(editor("userInstructions")).toHaveValue("cli file");
     click(text.save);
     await screen.findByText(text.saved);
-    expect(savedConfigs[0].routes).toEqual({
+    // Switches saved immediately during the test, so assert the final committed config.
+    expect(savedConfigs.at(-1)!.routes).toEqual({
       claudeDesktop: desktop,
       claudeCode: {
         enabled: true,
@@ -621,6 +631,87 @@ describe("PromptRewriterPanel full-text editing", () => {
     expect(getCalls).toBe(stoppedAt);
     expect(screen.getByRole("button", { name: text.capture })).toBeEnabled();
     expect(savedConfigs).toHaveLength(0);
+  });
+
+  it("keeps the saved master switch after the panel remounts its tracking scope", async () => {
+    runtime.config.enabled = true;
+    const { client } = renderPanel();
+    await ready();
+    fireEvent.click(screen.getByRole("switch", { name: text.enabled }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: text.enabled }),
+      ).not.toBeChecked(),
+    );
+    click(text.save);
+    await screen.findByText(text.saved);
+    // The epoch remount replaces the whole subtree; the switch must not bounce back.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: text.enabled }),
+      ).not.toBeChecked(),
+    );
+    expect(
+      client.getQueryData<Status>(promptRewriterKeys.status)?.config.enabled,
+    ).toBe(false);
+  });
+
+  it("stays disabled after saving when a stale get resolves afterwards", async () => {
+    runtime.config.enabled = true;
+    const gate: { release: (() => void) | null } = { release: null };
+    const { client } = renderPanel();
+    await ready();
+    fireEvent.click(screen.getByRole("switch", { name: text.enabled }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: text.enabled }),
+      ).not.toBeChecked(),
+    );
+
+    // A get that started before the save and resolves with the pre-save config.
+    server.use(
+      http.post(`${ENDPOINT}/prompt_rewriter_get`, async () => {
+        const stale = { ...runtime };
+        await new Promise<void>((resolve) => {
+          gate.release = resolve;
+        });
+        return HttpResponse.json(stale);
+      }),
+    );
+    void client.refetchQueries({ queryKey: promptRewriterKeys.status });
+
+    click(text.save);
+    await screen.findByText(text.saved);
+    gate.release?.();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: text.enabled }),
+      ).not.toBeChecked(),
+    );
+  });
+
+  it("persists a disabled master switch across a remount", async () => {
+    runtime.config.enabled = true;
+    const first = renderPanel();
+    await ready();
+    expect(screen.getByRole("switch", { name: text.enabled })).toBeChecked();
+    fireEvent.click(screen.getByRole("switch", { name: text.enabled }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: text.enabled }),
+      ).not.toBeChecked(),
+    );
+    click(text.save);
+    await screen.findByText(text.saved);
+    expect(savedConfigs.at(-1)?.enabled).toBe(false);
+    first.unmount();
+
+    // Remount the way reopening the settings page does: same QueryClient, same cache.
+    renderPanel(first.client);
+    await ready();
+    expect(
+      screen.getByRole("switch", { name: text.enabled }),
+    ).not.toBeChecked();
   });
 
   it("arms the selected route even when all replacement switches are off", async () => {

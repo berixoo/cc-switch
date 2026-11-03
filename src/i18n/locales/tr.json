@@ -17,6 +17,7 @@
     "route": "Uygulama yönlendirmesi",
     "routeEnabled": "Bu yönlendirmeyi etkinleştir",
     "scopeHint": "Kaydedilen değişiklikler istek girişinde, yeniden denemelerden ve sağlayıcı dönüşümünden önce bir kez uygulanır. Yalnızca Claude Code CLI ve Claude Desktop desteklenir; yönlendirmeleri bağımsızdır. Sohbet, kaynak dosyaları, resmî ayarlar ve doğrudan bağlantılar değişmez.",
+    "masterOffHint": "Ana anahtar kapalı. Aşağıdaki ayarlar korunur ancak tekrar açana kadar etkili olmaz.",
     "configPath": "Uzantı yapılandırma dosyası",
     "configError": "Yapılandırma uygulanamadı: {{error}}",
     "loadFailed": "Durum yüklenemedi: {{error}}",

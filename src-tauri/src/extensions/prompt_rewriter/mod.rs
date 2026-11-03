@@ -610,9 +610,22 @@ impl RewriteContext {
         self.observe(body, &result)?;
         // Capture-only or no-target contexts never reject or alter an otherwise normal request.
         if !self.snapshot.has_targets(self.route) {
+            log::info!(
+                "[prompt-rewriter] route={:?} master={} targets=false -> request passes through",
+                self.route,
+                self.snapshot.config.enabled
+            );
             return Ok(());
         }
         let preview = result?;
+        log::info!(
+            "[prompt-rewriter] route={:?} master={} system={} user={} status={:?}",
+            self.route,
+            self.snapshot.config.enabled,
+            preview.system_applied,
+            preview.user_applied,
+            preview.file_status
+        );
         *body = preview.body;
         Ok(())
     }

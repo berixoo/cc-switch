@@ -296,6 +296,48 @@ fn empty(content: Option<&Value>) -> bool {
 }
 
 /// All setters run before any removals, avoiding numeric-index path shifts across carriers.
+fn create_system(body: &mut Value, format: WireFormat, text: &str) -> Result<(), String> {
+    match format {
+        WireFormat::Anthropic => match body.get_mut("system") {
+            None | Some(Value::Null) => body["system"] = json!(text),
+            Some(Value::Array(blocks)) => blocks.push(json!({"type":"text","text":text})),
+            _ => return Err("prompt rewriter: unsupported system container".into()),
+        },
+        WireFormat::Responses => {
+            if body
+                .get("instructions")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err("prompt rewriter: unsupported instructions container".into());
+            }
+            body["instructions"] = json!(text);
+        }
+        WireFormat::Chat => {
+            if body.get("messages").is_none() {
+                body["messages"] = json!([]);
+            }
+            body["messages"]
+                .as_array_mut()
+                .ok_or("prompt rewriter: messages must be an array")?
+                .insert(0, json!({"role":"system","content":text}));
+        }
+        WireFormat::Gemini => {
+            if body.get("systemInstruction").is_none_or(Value::is_null) {
+                body["systemInstruction"] = json!({"parts":[]});
+            }
+            body["systemInstruction"]
+                .as_object_mut()
+                .ok_or("prompt rewriter: systemInstruction must be an object")?
+                .entry("parts")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or("prompt rewriter: systemInstruction.parts must be an array")?
+                .push(json!({"text":text}));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn commit(
     body: &mut Value,
     format: WireFormat,
@@ -338,107 +380,6 @@ pub(crate) fn commit(
 /// An empty, readable source has no client segment to replace. Add a separate user-level
 /// message, never splice into ordinary chat or claim the client supplied a file envelope.
 /// This runs after setters/removals so inserting at index zero cannot invalidate their paths.
-pub(crate) fn prepend_user_instructions(
-    body: &mut Value,
-    format: WireFormat,
-    text: &str,
-) -> Result<(), String> {
-    let (field, message) = match format {
-        WireFormat::Anthropic | WireFormat::Chat => (
-            "messages",
-            json!({"role":"user","content":[{"type":"text","text":text}]}),
-        ),
-        WireFormat::Responses => (
-            "input",
-            json!({"role":"user","content":[{"type":"input_text","text":text}]}),
-        ),
-        WireFormat::Gemini => ("contents", json!({"role":"user","parts":[{"text":text}]})),
-    };
-    if format == WireFormat::Responses {
-        if let Some(original) = body[field].as_str() {
-            body[field] = json!([{"role":"user","content":original}]);
-        }
-    }
-    if body.get(field).is_none_or(Value::is_null) {
-        body[field] = json!([]);
-    }
-    let messages = body[field]
-        .as_array_mut()
-        .ok_or("prompt rewriter: user instruction container must be an array")?;
-    // Idempotent: a conversation that already carries this exact block never gets a second one.
-    if messages.iter().any(|entry| message_mentions(entry, text)) {
-        return Ok(());
-    }
-    // A leading system/developer turn must stay first; operator instructions go after it.
-    let insert_at = messages
-        .iter()
-        .position(|entry| !matches!(entry["role"].as_str(), Some("system" | "developer")))
-        .unwrap_or(messages.len());
-    messages.insert(insert_at, message);
-    Ok(())
-}
-
-fn message_mentions(message: &Value, needle: &str) -> bool {
-    if let Some(text) = message.get("content").and_then(Value::as_str) {
-        return text.contains(needle);
-    }
-    // Anthropic/Chat/Responses keep text in `content`, Gemini in `parts`.
-    ["content", "parts"].iter().any(|key| {
-        message
-            .get(key)
-            .and_then(Value::as_array)
-            .is_some_and(|blocks| {
-                blocks.iter().any(|block| {
-                    block
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .is_some_and(|text| text.contains(needle))
-                })
-            })
-    })
-}
-
-fn create_system(body: &mut Value, format: WireFormat, text: &str) -> Result<(), String> {
-    match format {
-        WireFormat::Anthropic => match body.get_mut("system") {
-            None | Some(Value::Null) => body["system"] = json!(text),
-            Some(Value::Array(blocks)) => blocks.push(json!({"type":"text","text":text})),
-            _ => return Err("prompt rewriter: unsupported system container".into()),
-        },
-        WireFormat::Responses => {
-            if body
-                .get("instructions")
-                .is_some_and(|value| !value.is_null() && !value.is_string())
-            {
-                return Err("prompt rewriter: unsupported instructions container".into());
-            }
-            body["instructions"] = json!(text);
-        }
-        WireFormat::Chat => {
-            if body.get("messages").is_none() {
-                body["messages"] = json!([]);
-            }
-            body["messages"]
-                .as_array_mut()
-                .ok_or("prompt rewriter: messages must be an array")?
-                .insert(0, json!({"role":"system","content":text}));
-        }
-        WireFormat::Gemini => {
-            if body.get("systemInstruction").is_none_or(Value::is_null) {
-                body["systemInstruction"] = json!({"parts":[]});
-            }
-            body["systemInstruction"]
-                .as_object_mut()
-                .ok_or("prompt rewriter: systemInstruction must be an object")?
-                .entry("parts")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or("prompt rewriter: systemInstruction.parts must be an array")?
-                .push(json!({"text":text}));
-        }
-    }
-    Ok(())
-}
 
 fn cleanup_system(body: &mut Value, format: WireFormat) {
     match format {

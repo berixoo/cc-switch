@@ -17,6 +17,7 @@
     "route": "Application route",
     "routeEnabled": "Enable this route",
     "scopeHint": "Saved changes apply once at request ingress, before retries and provider conversion. Only Claude Code CLI and Claude Desktop are supported, with independent routes. Chat, source files, official configuration and direct connections stay unchanged.",
+    "masterOffHint": "Master switch is off. The settings below are kept but do not take effect until you turn it back on.",
     "configPath": "Extension configuration file",
     "configError": "Configuration file could not be applied: {{error}}",
     "loadFailed": "Could not load prompt rewriter status: {{error}}",

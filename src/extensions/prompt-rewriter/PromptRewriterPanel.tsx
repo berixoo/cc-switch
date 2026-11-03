@@ -156,18 +156,24 @@ export function PromptRewriterPanel() {
   const cancelGet = () =>
     client.cancelQueries({ queryKey: promptRewriterKeys.status });
   const preview = useMutation({ mutationFn: promptRewriterApi.preview });
+  // The explicit save commits the prompt bodies; switch-only saves must keep the draft.
+  const explicitSave = useRef(false);
   const save = useMutation({
     mutationFn: promptRewriterApi.save,
     onMutate: cancelGet,
     onSuccess: (result) => {
       publish(result);
       if (result.error || !result.available) return;
-      setDraft(null);
-      setDraftOriginals(null);
+      // Read the timestamp the write just produced; a stale read would report a false "saved".
       setSavedAt(
         client.getQueryState(promptRewriterKeys.status)?.dataUpdatedAt ?? null,
       );
       preview.reset();
+      if (explicitSave.current) {
+        explicitSave.current = false;
+        setDraft(null);
+        setDraftOriginals(null);
+      }
     },
   });
   const reload = useMutation({
@@ -237,6 +243,15 @@ export function PromptRewriterPanel() {
         [route]: { ...draft.routes[route], ...patch },
       },
     });
+  };
+  // Switches are policy toggles, not prompt content: persist them immediately so the user never
+  // has to remember a save, and so the running process picks the new state up on the next request.
+  const toggle = (next: Config) => {
+    change(next);
+    if (JSON.stringify(next) !== JSON.stringify(status.data?.config)) {
+      // Keep the draft: a switch must not discard prompt text the user has not saved yet.
+      save.mutate(next);
+    }
   };
   const perform = (action: Confirmation) => {
     if (action.kind === "reload") {
@@ -422,10 +437,21 @@ export function PromptRewriterPanel() {
         )}
         <SettingsSwitchRow
           label={t(`promptRewriter.enableTargets.${editor}`)}
+          disabled={!draft.enabled}
           checked={target.enabled}
-          onCheckedChange={(enabled) =>
-            changeRoute({ [editor]: { ...target, enabled } })
-          }
+          onCheckedChange={(enabled) => {
+            if (!draft) return;
+            toggle({
+              ...draft,
+              routes: {
+                ...draft.routes,
+                [route]: {
+                  ...draft.routes[route],
+                  [editor]: { ...target, enabled },
+                },
+              },
+            });
+          }}
         />
         <label className="block space-y-1.5 text-body text-fg-1">
           <span>{t(`promptRewriter.replacements.${editor}`)}</span>
@@ -495,12 +521,20 @@ export function PromptRewriterPanel() {
             <p className="text-caption text-fg-2">
               {t("promptRewriter.scopeHint")}
             </p>
+            {!draft.enabled && (
+              <p
+                role="status"
+                className="rounded-panel border border-border bg-action-soft px-3 py-2 text-caption text-fg-2"
+              >
+                {t("promptRewriter.masterOffHint")}
+              </p>
+            )}
             <fieldset disabled={busy} className="min-w-0 space-y-3">
               <SettingsCard>
                 <SettingsSwitchRow
                   label={t("promptRewriter.enabled")}
                   checked={draft.enabled}
-                  onCheckedChange={(enabled) => change({ ...draft, enabled })}
+                  onCheckedChange={(enabled) => toggle({ ...draft, enabled })}
                 />
                 <SettingsRow
                   label={t("promptRewriter.configPath")}
@@ -530,8 +564,18 @@ export function PromptRewriterPanel() {
               <SettingsCard>
                 <SettingsSwitchRow
                   label={t("promptRewriter.routeEnabled")}
+                  disabled={!draft.enabled}
                   checked={draft.routes[route].enabled}
-                  onCheckedChange={(enabled) => changeRoute({ enabled })}
+                  onCheckedChange={(enabled) => {
+                    if (!draft) return;
+                    toggle({
+                      ...draft,
+                      routes: {
+                        ...draft.routes,
+                        [route]: { ...draft.routes[route], enabled },
+                      },
+                    });
+                  }}
                 />
               </SettingsCard>
               {renderEditor("system")}
@@ -542,6 +586,7 @@ export function PromptRewriterPanel() {
                   disabled={!dirty && !status.data.error}
                   onClick={() => {
                     setSavedAt(null);
+                    explicitSave.current = true;
                     save.mutate(draft);
                   }}
                 >

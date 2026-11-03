@@ -13,7 +13,22 @@ pub fn prompt_rewriter_save(
     state: State<'_, PromptRewriter>,
     config: Config,
 ) -> Result<Status, String> {
-    state.save(config)
+    log::info!(
+        "[prompt-rewriter] save requested: enabled={}, claudeCode={}, claudeDesktop={}",
+        config.enabled,
+        config.routes.claude_code.enabled,
+        config.routes.claude_desktop.enabled
+    );
+    let result = state.save(config);
+    match &result {
+        Ok(status) => log::info!(
+            "[prompt-rewriter] save ok: enabled={}, path={}",
+            status.config.enabled,
+            status.path
+        ),
+        Err(error) => log::warn!("[prompt-rewriter] save failed: {error}"),
+    }
+    result
 }
 
 #[tauri::command]

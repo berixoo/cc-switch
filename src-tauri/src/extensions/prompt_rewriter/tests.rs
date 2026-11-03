@@ -164,7 +164,8 @@ fn desktop_global_block_requires_exact_boundaries_source_and_leading_position() 
         assert_eq!(preview.body, body);
         assert!(!preview.user_applied);
     }
-    // No usable carrier for this file: the replacement is injected instead of being dropped.
+    // No usable carrier for this file: nothing is added, because an injected message would
+    // become part of the client's history and outlive the extension being switched off.
     for body in [
         json!({"messages":[{"role":"user","content":[{"type":"text","text":wrapper.replace("/home/me/", "/home/other/")},{"type":"text","text":"chat"}]}]}),
         json!({"messages":[{"role":"assistant","content":"history"},{"role":"user","content":[{"type":"text","text":wrapper},{"type":"text","text":"chat"}]}]}),
@@ -176,12 +177,9 @@ fn desktop_global_block_requires_exact_boundaries_source_and_leading_position() 
             &source,
             body.clone(),
         );
-        assert_eq!(preview.file_status, FileStatus::Injected);
-        assert!(preview.user_applied);
-        assert!(preview
-            .body
-            .to_string()
-            .contains("<cc-switch-user-instructions>"));
+        assert_eq!(preview.body, body);
+        assert!(!preview.user_applied);
+        assert!(preview.reason.is_some());
     }
     // A stale body at the same path, and repeated copies, are still this one file.
     for text in [
@@ -305,15 +303,9 @@ fn posix_backslash_is_a_literal_path_character_not_a_directory_separator() {
         &source,
         body.clone(),
     );
-    // The literal backslash path is a different file, so its envelope keeps its bytes and the
-    // replacement is injected as a request-level message instead.
-    assert_eq!(preview.file_status, FileStatus::Injected);
-    assert!(preview.user_applied);
-    assert_eq!(preview.body["system"], body["system"]);
-    assert!(preview
-        .body
-        .to_string()
-        .contains("<cc-switch-user-instructions>"));
+    // The literal backslash path is a different file: keep its bytes and add nothing.
+    assert_eq!(preview.body, body);
+    assert!(!preview.user_applied);
     source.path = Some("C:\\Users\\me\\.claude\\CLAUDE.md".into());
     let body = json!({"system":envelope(Route::ClaudeDesktop, &source).replace("C:\\Users\\me\\.claude\\CLAUDE.md", "c:/users/me/.claude/CLAUDE.md"),"messages":[]});
     assert!(
@@ -541,18 +533,10 @@ fn bare_user_text_equal_to_source_never_rewrites_in_any_protocol() {
             &source,
             body.clone(),
         );
-        // Bare text is never treated as the file, but a missing envelope now injects the
-        // configured instructions as their own request-level message.
-        assert_eq!(preview.file_status, FileStatus::Injected);
-        assert!(preview.user_applied);
-        assert!(preview
-            .body
-            .to_string()
-            .contains("<cc-switch-user-instructions>"));
-        assert!(preview
-            .body
-            .to_string()
-            .contains("Original global instructions."));
+        // Bare text is never treated as the file, and no instruction message is added.
+        assert_eq!(preview.body, body);
+        assert!(!preview.user_applied);
+        assert!(preview.reason.is_some());
     }
 }
 
@@ -613,7 +597,7 @@ fn only_complete_path_content_and_boundary_match_allows_file_replacement() {
             assert_eq!(preview.file_status, FileStatus::Unidentified);
             assert!(!preview.user_applied);
         }
-        // A complete envelope for a different file is not this source: inject instead.
+        // A complete envelope for a different file is not this source: leave it untouched.
         let other = wrapper.replace("/home/me/", "/home/other/");
         let body =
             json!({"input":[{"role":"user","content":[{"type":"input_text","text":other}]}]});
@@ -622,14 +606,10 @@ fn only_complete_path_content_and_boundary_match_allows_file_replacement() {
             route,
             WireFormat::Responses,
             &source,
-            body,
+            body.clone(),
         );
-        assert_eq!(preview.file_status, FileStatus::Injected);
-        assert!(preview.user_applied);
-        assert!(preview
-            .body
-            .to_string()
-            .contains("<cc-switch-user-instructions>"));
+        assert_eq!(preview.body, body);
+        assert!(!preview.user_applied);
     }
 }
 
@@ -739,96 +719,6 @@ fn system_carried_envelope_is_replaced_from_a_stale_snapshot() {
     let system = preview.body["system"].as_str().unwrap();
     assert!(system.contains("new file"));
     assert!(!system.contains("captured when the session started"));
-}
-
-#[test]
-fn resumed_conversation_without_any_envelope_injects_request_level_instructions() {
-    for route in [Route::ClaudeDesktop, Route::ClaudeCode] {
-        let source = source(route);
-        let body = json!({
-            "system": "client system",
-            "messages": [
-                {"role":"user","content":"This session is being continued from a previous one."},
-                {"role":"assistant","content":"understood"},
-                {"role":"user","content":"继续"}
-            ]
-        });
-        let preview = run(
-            config(Some("new system"), Some("new file")),
-            route,
-            WireFormat::Anthropic,
-            &source,
-            body.clone(),
-        );
-        assert!(preview.system_applied && preview.user_applied);
-        assert_eq!(preview.file_status, FileStatus::Injected);
-        assert_eq!(preview.body["system"], json!("new system"));
-        let messages = preview.body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 4);
-        assert!(messages[0]
-            .to_string()
-            .contains("<cc-switch-user-instructions>"));
-        // The client's own history keeps its bytes and order.
-        for index in 0..3 {
-            assert_eq!(messages[index + 1], body["messages"][index]);
-        }
-    }
-}
-
-#[test]
-fn injected_request_instructions_are_idempotent() {
-    for route in [Route::ClaudeDesktop, Route::ClaudeCode] {
-        let source = source(route);
-        let (body, _) = native_system(route.wire_format(), "client system");
-        let once = run(
-            config(None, Some("new file")),
-            route,
-            route.wire_format(),
-            &source,
-            body,
-        );
-        assert_eq!(once.file_status, FileStatus::Injected);
-        // Feeding the rewritten body back must not stack a second copy.
-        let twice = run(
-            config(None, Some("new file")),
-            route,
-            route.wire_format(),
-            &source,
-            once.body.clone(),
-        );
-        assert_eq!(twice.body, once.body);
-        assert_eq!(
-            twice.body["messages"]
-                .to_string()
-                .matches("<cc-switch-user-instructions>")
-                .count(),
-            1
-        );
-    }
-}
-
-#[test]
-fn injected_instructions_follow_a_leading_system_turn() {
-    let source = source(Route::ClaudeCode);
-    let body = json!({"messages":[
-        {"role":"system","content":"provider rules"},
-        {"role":"user","content":"chat"}
-    ]});
-    let preview = run(
-        config(None, Some("new file")),
-        Route::ClaudeCode,
-        WireFormat::Chat,
-        &source,
-        body.clone(),
-    );
-    assert_eq!(preview.file_status, FileStatus::Injected);
-    let messages = preview.body["messages"].as_array().unwrap();
-    // Chat payloads must still start with the system turn.
-    assert_eq!(messages[0]["role"], "system");
-    assert!(messages[1]
-        .to_string()
-        .contains("<cc-switch-user-instructions>"));
-    assert_eq!(messages[2], body["messages"][1]);
 }
 
 #[test]
@@ -1044,29 +934,20 @@ fn claude_file_wrapper_may_omit_exactly_one_terminal_lf() {
                 .unwrap()
                 .contains(sent.content.as_deref().unwrap()));
         }
-        // A different path is a different file: its envelope is never rewritten, but the
-        // configured replacement still applies as an injected request-level message.
+        // A different path is a different file: keep its bytes and add nothing.
         let other = Source {
             path: Some("/home/me/.claude/OTHER.md".into()),
             ..source.clone()
         };
-        let injected = run(
+        let untouched = run(
             config(None, Some("wrong")),
             route,
             WireFormat::Anthropic,
             &other,
             body.clone(),
         );
-        assert_eq!(injected.file_status, FileStatus::Injected);
-        assert!(injected.user_applied);
-        assert_eq!(
-            injected.body["messages"][1], body["messages"][0],
-            "the other file's envelope must keep its bytes"
-        );
-        assert!(injected
-            .body
-            .to_string()
-            .contains("<cc-switch-user-instructions>"));
+        assert_eq!(untouched.body, body);
+        assert!(!untouched.user_applied);
     }
 }
 
@@ -1163,17 +1044,9 @@ fn anthropic_system_replacement_does_not_depend_on_a_separate_file_match() {
                     assert!(preview.system_applied, "{:?}", preview.reason);
                     assert_eq!(preview.body["tools"], body["tools"]);
                     let loaded = selected_source.content.is_some();
-                    assert_eq!(preview.user_applied, loaded);
-                    if loaded {
-                        assert_eq!(
-                            preview.file_status,
-                            if file_present {
-                                FileStatus::Identified
-                            } else {
-                                FileStatus::Injected
-                            }
-                        );
-                    } else {
+                    // Without an envelope for this file nothing is added, loaded or not.
+                    assert_eq!(preview.user_applied, loaded && file_present);
+                    if !(loaded && file_present) {
                         assert_eq!(preview.file_status, FileStatus::Unidentified);
                         assert_eq!(preview.body["messages"], body["messages"]);
                         assert!(preview.reason.is_some());
@@ -1222,13 +1095,9 @@ fn unidentified_shared_carriers_fail_closed_without_partial_system_replacement_o
         &source,
         body.clone(),
     );
-    assert!(preview.system_applied && preview.user_applied);
-    assert_eq!(preview.file_status, FileStatus::Injected);
+    assert!(preview.system_applied);
+    assert!(!preview.user_applied);
     assert_eq!(preview.body["instructions"], json!("new system"));
-    assert!(preview
-        .body
-        .to_string()
-        .contains("<cc-switch-user-instructions>"));
     let (body, _) = native_system(WireFormat::Responses, &source.content.clone().unwrap());
     assert_eq!(
         run(
@@ -1406,7 +1275,7 @@ fn absent_native_system_can_be_created_without_touching_chat() {
 }
 
 #[test]
-fn empty_sources_inject_separate_instructions_without_changing_chat() {
+fn empty_sources_add_no_message_and_keep_chat_unchanged() {
     for route in [Route::ClaudeDesktop, Route::ClaudeCode] {
         let source = Source {
             content: Some(String::new()),
@@ -1428,17 +1297,9 @@ fn empty_sources_inject_separate_instructions_without_changing_chat() {
                 &source,
                 body.clone(),
             );
-            assert!(preview.user_applied);
+            // An empty source with no envelope gets no added message; only the system target acts.
             assert_eq!(preview.system_applied, system.is_some());
-            assert_eq!(preview.file_status, FileStatus::Injected);
-            assert_eq!(preview.reason, None);
-            let mut remaining = preview.body.clone();
-            let injected = remaining[field].as_array_mut().unwrap().remove(0);
-            assert_eq!(injected["role"], "user");
-            assert_eq!(
-                injected["content"][0]["text"],
-                "<cc-switch-user-instructions>\nnew file\n</cc-switch-user-instructions>"
-            );
+            assert!(!preview.user_applied);
             let expected = run(
                 config(system, None),
                 route,
@@ -1446,24 +1307,17 @@ fn empty_sources_inject_separate_instructions_without_changing_chat() {
                 &source,
                 body.clone(),
             );
-            assert_eq!(remaining, expected.body);
-            let again = run(
-                config(system, Some("new file")),
-                route,
-                route.wire_format(),
-                &source,
-                preview.body.clone(),
-            );
+            assert_eq!(preview.body, expected.body);
             assert_eq!(
-                again.body, preview.body,
-                "same explicit addition must not accumulate"
+                preview.body[field].as_array().unwrap().len(),
+                body[field].as_array().unwrap().len()
             );
         }
     }
 }
 
 #[test]
-fn claude_empty_source_injection_supports_all_upstream_carriers() {
+fn claude_empty_source_adds_nothing_in_all_upstream_carriers() {
     let route = Route::ClaudeCode;
     let empty = Source {
         content: Some(String::new()),
@@ -1478,44 +1332,25 @@ fn claude_empty_source_injection_supports_all_upstream_carriers() {
             &empty,
             body.clone(),
         );
-        assert!(preview.system_applied && preview.user_applied);
-        assert_eq!(preview.file_status, FileStatus::Injected);
+        // Only the system target acts; the user-level target never appends a message.
+        assert!(preview.system_applied);
+        assert!(!preview.user_applied);
+        let without_file = run(
+            config(Some("new system"), None),
+            route,
+            format,
+            &empty,
+            body.clone(),
+        );
+        assert_eq!(preview.body, without_file.body);
         let field = match format {
             WireFormat::Anthropic | WireFormat::Chat => "messages",
             WireFormat::Responses => "input",
             WireFormat::Gemini => "contents",
         };
-        let mut remaining = preview.body.clone();
-        let entries = remaining[field].as_array_mut().unwrap();
-        let position = entries
-            .iter()
-            .position(|entry| entry.to_string().contains("<cc-switch-user-instructions>"))
-            .expect("injected instruction message");
-        // Chat keeps its leading developer turn first; other carriers inject at the front.
-        assert_eq!(position, usize::from(matches!(format, WireFormat::Chat)));
-        let injected = entries.remove(position);
-        assert_eq!(injected["role"], "user");
         assert_eq!(
-            remaining,
-            run(
-                config(Some("new system"), None),
-                route,
-                format,
-                &empty,
-                body
-            )
-            .body
-        );
-        assert_eq!(
-            run(
-                config(Some("new system"), Some("new file")),
-                route,
-                format,
-                &empty,
-                preview.body.clone(),
-            )
-            .body,
-            preview.body,
+            preview.body[field].as_array().unwrap().len(),
+            body[field].as_array().unwrap().len()
         );
     }
 }
@@ -1565,7 +1400,7 @@ fn empty_source_injection_requires_ready_absolute_source_and_active_nonempty_tar
             assert!(!preview.user_applied);
             assert_eq!(preview.body, body);
         }
-        // Any loaded source at a real absolute path injects when the envelope is absent.
+        // Even a loaded source at a real absolute path adds nothing when the envelope is absent.
         for loaded in [
             Source {
                 content: Some(" \n".into()),
@@ -1580,12 +1415,9 @@ fn empty_source_injection_requires_ready_absolute_source_and_active_nonempty_tar
                 &loaded,
                 body.clone(),
             );
-            assert_eq!(preview.file_status, FileStatus::Injected);
-            assert!(preview.user_applied);
-            assert!(preview
-                .body
-                .to_string()
-                .contains("<cc-switch-user-instructions>"));
+            assert_eq!(preview.body, body);
+            assert!(!preview.user_applied);
+            assert!(preview.reason.is_some());
         }
         for target in [None, Some("")] {
             let preview = run(
@@ -1728,10 +1560,9 @@ fn empty_source_preserves_project_envelopes_and_supports_custom_paths() {
             &empty,
             body.clone(),
         );
-        assert_eq!(preview.file_status, FileStatus::Injected);
-        let mut actual = preview.body;
-        actual[field].as_array_mut().unwrap().remove(0);
-        assert_eq!(actual, body);
+        // A project-level envelope is a different file: keep every byte, add nothing.
+        assert_eq!(preview.body, body);
+        assert!(!preview.user_applied);
     }
 }
 
@@ -1743,6 +1574,7 @@ fn empty_source_responses_string_and_history_reference_are_preserved() {
         ..source(route)
     };
     for input in [json!("unaltered chat"), json!([]), Value::Null] {
+        let body_input = input.clone();
         let body = json!({"instructions":"system","input":input,"previous_response_id":"resp_previous","model":"client"});
         let preview = run(
             config(Some("new system"), Some("new file")),
@@ -1751,15 +1583,13 @@ fn empty_source_responses_string_and_history_reference_are_preserved() {
             &empty,
             body,
         );
-        assert!(preview.system_applied && preview.user_applied);
+        assert!(preview.system_applied);
+        assert!(!preview.user_applied);
         assert_eq!(preview.body["instructions"], "new system");
         assert_eq!(preview.body["previous_response_id"], "resp_previous");
         assert_eq!(preview.body["model"], "client");
-        let messages = preview.body["input"].as_array().unwrap();
-        assert_eq!(messages.len(), if input.is_string() { 2 } else { 1 });
-        if input.is_string() {
-            assert_eq!(messages[1], json!({"role":"user","content":input}));
-        }
+        // Nothing is prepended, so the container keeps whatever shape the client sent.
+        assert_eq!(preview.body["input"], body_input);
     }
 }
 
@@ -1780,8 +1610,9 @@ fn empty_source_uncertain_shared_boundary_and_invalid_container_are_atomic() {
             empty.clone(),
         )
         .unwrap();
-        assert!(ctx.rewrite_ingress(&mut body).is_err());
-        assert_eq!(body, original);
+        // With no file target left to apply, an invalid container is no longer an error.
+        ctx.rewrite_ingress(&mut body).unwrap();
+        assert_eq!(body["messages"], original["messages"]);
         for text in [
             "system\n<system-reminder>\npartial",
             "system\n</system-reminder>",
@@ -1895,7 +1726,7 @@ fn empty_source_checks_noneditable_blocks_after_desktop_project_prefix() {
 }
 
 #[test]
-fn empty_source_read_and_injection_never_write_the_source() {
+fn empty_source_read_and_rewrite_never_write_the_source() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("CLAUDE.md");
     std::fs::write(&path, b"").unwrap();
@@ -1908,7 +1739,8 @@ fn empty_source_read_and_injection_never_write_the_source() {
         &source,
         body,
     );
-    assert_eq!(preview.file_status, FileStatus::Injected);
+    assert!(preview.system_applied);
+    assert!(!preview.user_applied);
     assert_eq!(std::fs::read(&path).unwrap(), b"");
 }
 
@@ -2036,6 +1868,30 @@ fn config_io_source_refresh_and_failure_recovery_leave_official_and_instruction_
             );
         }
     };
+    // The real config carries large replacement bodies; toggling the master switch must still
+    // persist and reload with the bodies intact.
+    let mut big = config(Some(&"x".repeat(27_000)), Some(&"y".repeat(1_900)));
+    big.enabled = false;
+    let heavy = PromptRewriter::load_at(path.clone());
+    heavy.save_with_path(big.clone(), || path.clone()).unwrap();
+    drop(heavy);
+    let reloaded = PromptRewriter::load_at(path.clone()).status().unwrap();
+    assert!(!reloaded.config.enabled);
+    assert_eq!(reloaded.config, big);
+
+    // Turning the master switch off must survive a restart, not just the in-memory snapshot.
+    let mut off = config(Some("system"), Some("file"));
+    off.enabled = false;
+    let runtime = PromptRewriter::load_at(path.clone());
+    runtime
+        .save_with_path(off.clone(), || path.clone())
+        .unwrap();
+    assert!(!runtime.status().unwrap().config.enabled);
+    drop(runtime);
+    let restarted = PromptRewriter::load_at(path.clone());
+    assert!(!restarted.status().unwrap().config.enabled);
+    assert_eq!(restarted.status().unwrap().config, off);
+
     let runtime = PromptRewriter::load_at(path.clone());
     assert_unchanged();
     let mut draft = config(Some("system"), Some("file"));
