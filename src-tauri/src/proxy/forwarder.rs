@@ -7348,6 +7348,36 @@ mod tests {
         }
 
         #[test]
+        fn prompt_rewriter_master_switch_off_leaves_real_requests_untouched() {
+            use crate::extensions::prompt_rewriter::Route;
+            let route_config = json!({
+                "enabled": true,
+                "system": {"enabled": true, "replacement": "rewritten-system"},
+                "userInstructions": {"enabled": true, "replacement": "rewritten-file", "sourcePath": null}
+            });
+            let config: crate::extensions::prompt_rewriter::Config =
+                serde_json::from_value(json!({
+                    "version": 2,
+                    "enabled": false,
+                    "routes": { "claudeCode": route_config, "claudeDesktop": route_config }
+                }))
+                .unwrap();
+            let context = RewriteContext::for_test(config, Route::ClaudeCode).unwrap();
+            let original = json!({
+                "system": "client-system",
+                "messages": [{"role": "user", "content": "client-user"}]
+            });
+            let mut body = original.clone();
+            context.rewrite_ingress(&mut body).unwrap();
+            assert_eq!(
+                body, original,
+                "master switch off must not rewrite anything"
+            );
+            assert!(!context.system_enabled());
+            assert!(!context.user_instructions_enabled());
+        }
+
+        #[test]
         fn prompt_rewriter_preserves_original_conversation_fingerprint() {
             use crate::extensions::prompt_rewriter::Route;
             let first = json!({
@@ -7617,9 +7647,11 @@ mod tests {
                         let seen = upstream.seen.lock().await.pop().unwrap();
                         let wire = seen.body.to_string();
                         assert!(wire.contains("rewritten-system"), "{api_format}: {wire}");
+                        // A non-empty source replaces the envelope in place; an empty source has
+                        // no envelope and nothing is added.
                         assert_eq!(
                             wire.matches("rewritten-file").count(),
-                            1,
+                            usize::from(!empty),
                             "{api_format}: {wire}"
                         );
                         assert!(wire.contains("project-kept"), "{api_format}: {wire}");
@@ -7852,7 +7884,8 @@ mod tests {
             let seen = success.seen.lock().await.pop().unwrap();
             for wire in [failed_body.lock().await.to_string(), seen.body.to_string()] {
                 assert!(wire.contains("\"hi\""), "{wire}");
-                assert_eq!(wire.matches("rewritten-file").count(), 1, "{wire}");
+                // No envelope is present, so the file target never adds a message on any attempt.
+                assert_eq!(wire.matches("rewritten-file").count(), 0, "{wire}");
                 assert!(wire.contains("old-once"), "{wire}");
                 assert!(!wire.contains("-once-once"), "{wire}");
             }

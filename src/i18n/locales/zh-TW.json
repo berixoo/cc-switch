@@ -17,6 +17,7 @@
     "route": "應用程式路由",
     "routeEnabled": "啟用此路由",
     "scopeHint": "儲存後在請求入口執行一次，早於重試與供應商轉換。僅支援 Claude Code CLI 與 Claude Desktop，兩者獨立設定。聊天、來源檔案、官方設定與直連保持不變。",
+    "masterOffHint": "總開關已關閉。以下設定會保留，但不會生效，重新開啟總開關即可恢復。",
     "configPath": "擴充設定檔",
     "configError": "設定檔未能套用：{{error}}",
     "loadFailed": "讀取提示詞改寫狀態失敗：{{error}}",

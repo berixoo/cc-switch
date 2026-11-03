@@ -238,15 +238,6 @@ pub(crate) fn rewrite(
         .iter()
         .map(|node| envelopes(&node.text, source))
         .collect();
-    // A stale envelope is not permission to add a second copy, even if it later fails
-    // the stricter whole-message checks below.
-    let source_envelope_present = spans.iter().flatten().any(|span| span.source_path_matched);
-    // Request-level injection needs a loaded source at a real absolute path. Whether that source
-    // is empty or already has text only changes which policy applies, not whether the current
-    // replacement may be added when the client did not send the envelope at all.
-    let loaded_source = source.state == SourceState::Ready
-        && source.content.is_some()
-        && source.path.as_deref().and_then(normalized_path).is_some();
     // User-role carriers must consist entirely of envelopes, not prose quoting a file envelope.
     for (node, spans) in selection.nodes.iter().zip(&mut spans) {
         if !node.system && !outside(&node.text, spans).trim().is_empty() {
@@ -340,47 +331,32 @@ pub(crate) fn rewrite(
                             .is_some_and(|text| remaining.contains(text))
                 })
     });
-    let incomplete_file_carrier = selection.nodes.iter().zip(&spans).any(|(node, spans)| {
-        !node.system
-            && node.text.contains("Contents of ")
-            && (spans.is_empty() || !outside(&node.text, spans).trim().is_empty())
-    });
-    let rejected_file_carrier = selection.rejected_file_carriers.iter().any(|text| {
-        let spans = envelopes(text, source);
-        spans.iter().any(|span| span.source_path_matched)
-            || (text.contains("Contents of ")
-                && (spans.is_empty() || !outside(text, &spans).trim().is_empty()))
-    });
-    // The client may not send the global file at all (resumed or compacted sessions, subagents).
-    // Then the only way to apply the replacement is a request-level instruction message. It is
-    // skipped whenever any carrier for this path exists in any form, so nothing is duplicated.
-    let instructions_absent = loaded_source
-        && !source_envelope_present
-        && !incomplete_file_carrier
-        && !rejected_file_carrier;
-    let injected = user
-        .filter(|text| instructions_absent && !text.is_empty())
-        .map(|text| {
-            format!("<cc-switch-user-instructions>\n{text}\n</cc-switch-user-instructions>")
-        });
-    // Anthropic's system is independent of an absent file. With a verified empty source,
-    // Responses/Chat can also replace system text without inventing a file-content match.
-    let unresolved_shared = format != WireFormat::Anthropic
+    // Only replace in place. A client that does not send the global file gets no request-level
+    // instruction message: anything added here becomes part of the client's conversation history
+    // and keeps affecting later turns even after the extension is switched off.
+    // Non-Anthropic formats may share one carrier between system and file text. When that
+    // carrier exists but no file envelope was found, the file target has nothing to edit while
+    // the system target still does: drop only the file target instead of cancelling the request.
+    let shared_carrier_without_file = format != WireFormat::Anthropic
         && system.is_some()
         && user.is_some()
         && count == 0
-        && !instructions_absent
         && selection.nodes.iter().any(|node| node.system);
-    if ((system.is_some() || injected.is_some()) && uncertain_system) || unresolved_shared {
+    if system.is_some() && uncertain_system {
         preview.reason = Some(
             "system and file instruction boundaries cannot be separated; no changes applied".into(),
         );
         return Ok(preview);
     }
-    if user.is_some() && count == 0 && injected.is_none() {
+    let user = if shared_carrier_without_file {
+        None
+    } else {
+        user
+    };
+    if user.is_some() && count == 0 {
         let any_envelope = spans.iter().flatten().next().is_some();
         preview.reason = Some(if user == Some("") {
-            "replacement is empty; no user instruction added".into()
+            "replacement is empty; no user instruction applied".into()
         } else if any_envelope {
             "instruction envelope found for a different path than the selected source; no user replacement applied".into()
         } else {
@@ -472,11 +448,7 @@ pub(crate) fn rewrite(
     }
     let created = system.filter(|_| !inserted);
     let size: usize = texts.iter().map(String::len).sum();
-    if size
-        .saturating_add(created.map_or(0, str::len))
-        .saturating_add(injected.as_ref().map_or(0, String::len))
-        > 8 * 1024 * 1024
-    {
+    if size.saturating_add(created.map_or(0, str::len)) > 8 * 1024 * 1024 {
         return Err("prompt rewriter: rewritten text exceeds 8 MiB".into());
     }
     // Build and commit the entire edit plan in a private copy; no partial edits can escape.
@@ -497,13 +469,7 @@ pub(crate) fn rewrite(
             system.is_some(),
         )?;
     }
-    if let Some(text) = injected {
-        adapters::prepend_user_instructions(&mut preview.body, format, &text)?;
-        preview.file_status = FileStatus::Injected;
-        preview.user_applied = true;
-    } else {
-        preview.user_applied = user.is_some() && count >= 1;
-    }
+    preview.user_applied = user.is_some() && count >= 1;
     preview.system_applied = system.is_some();
     if let Some(replacement) = system {
         // Full replacement is one logical body even when original system text spanned carriers.
