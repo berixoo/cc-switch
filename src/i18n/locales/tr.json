@@ -36,6 +36,13 @@
       "system": "Yakalanan özgün sistem metni (salt okunur)",
       "userInstructions": "Diskteki özgün dosya (salt okunur)"
     },
+    "applyMode": "Uygulama biçimi",
+    "modes": {
+      "append": "Özgün metnin ardına ekle",
+      "replace": "Özgün metnin yerine koy"
+    },
+    "stripSafetyNotice": "Yerleşik güvenlik bildirimini kaldır",
+    "stripSafetyNoticeHint": "Uygulamadan önce istemcinin kendi yetkili güvenlik testi paragrafını kaldırır; diğer metinlere dokunmaz.",
     "replacements": {
       "system": "Sistem yerine yazılacak tam metin",
       "userInstructions": "Talimat dosyası yerine yazılacak tam metin"
