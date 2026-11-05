@@ -36,6 +36,11 @@
       "system": "已取得的系統原文（唯讀）",
       "userInstructions": "磁碟檔案原文（唯讀）"
     },
+    "appendPosition": "附加位置",
+    "positions": {
+      "start": "開頭（標頭之後）",
+      "end": "結尾"
+    },
     "applyMode": "套用方式",
     "modes": {
       "append": "附加在原內容之後",

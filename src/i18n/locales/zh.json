@@ -33,6 +33,11 @@
       "system": "已获取的系统原文（只读）",
       "userInstructions": "磁盘文件原文（只读）"
     },
+    "appendPosition": "追加位置",
+    "positions": {
+      "start": "开头（头部之后）",
+      "end": "结尾"
+    },
     "applyMode": "应用方式",
     "modes": {
       "append": "追加在原内容之后",

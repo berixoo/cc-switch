@@ -44,6 +44,21 @@ impl ApplyMode {
     }
 }
 
+/// Where appended text goes relative to the client's own text.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AppendPosition {
+    /// After the client text.
+    #[default]
+    End,
+    /// Before the client text, but after any leading header lines the client relies on.
+    Start,
+}
+
+fn default_position() -> AppendPosition {
+    AppendPosition::End
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SystemConfig {
@@ -51,6 +66,9 @@ pub struct SystemConfig {
     /// Missing in v2 files written before modes existed; those default to append.
     #[serde(default = "ApplyMode::default_append")]
     pub mode: ApplyMode,
+    /// Only meaningful in append mode.
+    #[serde(default = "default_position")]
+    pub position: AppendPosition,
     pub replacement: Option<String>,
     /// Drop the client's built-in safety boilerplate before appending, so the appended text is
     /// the only policy in effect. Off by default.
@@ -64,6 +82,8 @@ pub struct UserInstructionsConfig {
     pub enabled: bool,
     #[serde(default = "ApplyMode::default_append")]
     pub mode: ApplyMode,
+    #[serde(default = "default_position")]
+    pub position: AppendPosition,
     pub replacement: Option<String>,
     pub source_path: Option<String>,
 }

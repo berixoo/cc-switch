@@ -36,6 +36,11 @@
       "system": "Captured system original (read-only)",
       "userInstructions": "Disk file original (read-only)"
     },
+    "appendPosition": "Append position",
+    "positions": {
+      "start": "Beginning (after header)",
+      "end": "End"
+    },
     "applyMode": "Application mode",
     "modes": {
       "append": "Append after the original",

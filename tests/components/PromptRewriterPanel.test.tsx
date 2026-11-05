@@ -40,12 +40,14 @@ const makeRoute = (): RouteConfig => ({
   system: {
     enabled: false,
     mode: "append",
+    position: "end",
     replacement: null,
     stripSafetyNotice: false,
   },
   userInstructions: {
     enabled: false,
     mode: "append",
+    position: "end",
     replacement: null,
     sourcePath: null,
   },
@@ -319,12 +321,14 @@ describe("PromptRewriterPanel full-text editing", () => {
       system: {
         enabled: true,
         mode: "append",
+        position: "end",
         replacement: "system replacement\nfull body",
         stripSafetyNotice: false,
       },
       userInstructions: {
         enabled: true,
         mode: "append",
+        position: "end",
         replacement: "file replacement\nfull body",
         sourcePath: null,
       },
@@ -454,6 +458,7 @@ describe("PromptRewriterPanel full-text editing", () => {
     runtime.config.routes.claudeDesktop.system = {
       enabled: true,
       mode: "append",
+      position: "end",
       replacement: "desktop only",
       stripSafetyNotice: false,
     };
@@ -469,12 +474,14 @@ describe("PromptRewriterPanel full-text editing", () => {
       system: {
         enabled: true,
         mode: "append",
+        position: "end",
         replacement: "desktop draft",
         stripSafetyNotice: false,
       },
       userInstructions: {
         enabled: false,
         mode: "append",
+        position: "end",
         replacement: "desktop file",
         sourcePath: "D:/desktop/custom.md",
       },
@@ -518,12 +525,14 @@ describe("PromptRewriterPanel full-text editing", () => {
         system: {
           enabled: true,
           mode: "append",
+          position: "end",
           replacement: "cli system",
           stripSafetyNotice: false,
         },
         userInstructions: {
           enabled: true,
           mode: "append",
+          position: "end",
           replacement: "cli file",
           sourcePath: "D:/cli/CLAUDE.md",
         },
@@ -761,6 +770,7 @@ describe("PromptRewriterPanel full-text editing", () => {
     runtime.config.routes.claudeDesktop.system = {
       enabled: true,
       mode: "append",
+      position: "end",
       replacement: "old saved replacement",
       stripSafetyNotice: false,
     };
@@ -788,6 +798,7 @@ describe("PromptRewriterPanel full-text editing", () => {
     expect(savedConfigs[0].routes.claudeDesktop.system).toEqual({
       enabled: false,
       mode: "append",
+      position: "end",
       replacement: null,
       stripSafetyNotice: false,
     });
@@ -1195,6 +1206,7 @@ describe("PromptRewriterPanel empty-source status", () => {
       runtime.config.routes[route].userInstructions = {
         enabled: true,
         mode: "append",
+        position: "end",
         replacement,
         sourcePath: null,
       };
@@ -1257,6 +1269,7 @@ describe("PromptRewriterPanel empty-source status", () => {
     runtime.config.routes.claudeDesktop.userInstructions = {
       enabled: true,
       mode: "append",
+      position: "end",
       replacement: "",
       sourcePath: null,
     };
@@ -1371,6 +1384,7 @@ describe("PromptRewriterPanel advanced preview", () => {
       runtime.config.routes.claudeDesktop.system = {
         enabled: true,
         mode: "append",
+        position: "end",
         replacement: "saved replacement",
         stripSafetyNotice: false,
       };
