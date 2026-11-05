@@ -324,6 +324,43 @@ fn posix_backslash_is_a_literal_path_character_not_a_directory_separator() {
 }
 
 #[test]
+fn append_mode_survives_a_real_desktop_system_prompt_shape() {
+    // Mirrors the desktop payload: a long system string, then the file envelope in messages.
+    let source = source(Route::ClaudeDesktop);
+    let wrapper = desktop_global_envelope(&source);
+    let mut cfg = config(Some("APPENDED MARKER"), Some("file text"));
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    cfg.routes.claude_desktop.user_instructions.mode = ApplyMode::Append;
+    let long_system = "x".repeat(30_000);
+    let body = json!({
+        "system": long_system,
+        "messages": [{"role":"user","content":[{"type":"text","text":wrapper}]}]
+    });
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    assert!(preview.system_applied);
+    let system = preview.body["system"].as_str().unwrap();
+    assert!(
+        system.starts_with(&long_system),
+        "original text must stay first"
+    );
+    assert!(
+        system.ends_with("APPENDED MARKER"),
+        "appended text must be at the end: {}",
+        &system[system.len().saturating_sub(80)..]
+    );
+    assert_eq!(
+        system.len(),
+        long_system.len() + 1 + "APPENDED MARKER".len()
+    );
+}
+
+#[test]
 fn append_mode_keeps_the_client_text_and_adds_ours_after_it() {
     let source = source(Route::ClaudeCode);
     let wrapper = envelope(Route::ClaudeCode, &source);
@@ -348,6 +385,57 @@ extra system",
     assert!(
         rewritten.find("Original global instructions.") < rewritten.find("extra file"),
         "appended text goes after the original: {rewritten}"
+    );
+}
+
+#[test]
+fn append_with_stripping_keeps_the_real_desktop_prompt_and_appends() {
+    let source = source(Route::ClaudeDesktop);
+    let mut cfg = config(Some("OUR POLICY TEXT"), None);
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    cfg.routes.claude_desktop.system.strip_safety_notice = true;
+    let notice = "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.";
+    let real_system = format!(
+        "x-anthropic-billing-header: CC
+
+Header body.
+
+{notice}
+IMPORTANT: You must NEVER generate or guess URLs.
+
+TAIL SECTION."
+    );
+    let body = json!({
+        "system": real_system,
+        "messages": [{"role":"user","content":"chat"}]
+    });
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    assert!(preview.system_applied);
+    let system = preview.body["system"].as_str().unwrap();
+    assert!(
+        !system.contains("Assist with authorized security testing"),
+        "notice removed"
+    );
+    assert!(
+        system.starts_with("x-anthropic-billing-header: CC"),
+        "head kept"
+    );
+    assert!(
+        system.contains("NEVER generate or guess URLs"),
+        "url rule kept"
+    );
+    assert!(system.contains("TAIL SECTION."), "tail kept");
+    assert!(system.ends_with("OUR POLICY TEXT"), "ours appended last");
+    assert_eq!(
+        preview.system_after.as_deref(),
+        Some(system),
+        "preview must report the wire text, not just the configured text"
     );
 }
 

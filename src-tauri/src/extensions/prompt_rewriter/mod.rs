@@ -619,13 +619,32 @@ impl RewriteContext {
             return Ok(());
         }
         let preview = result?;
+        let system_in = body
+            .get("system")
+            .map(|v| match v {
+                Value::String(t) => t.len(),
+                Value::Array(a) => a.len(),
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let system_out = preview
+            .body
+            .get("system")
+            .map(|v| match v {
+                Value::String(t) => t.len(),
+                Value::Array(a) => a.len(),
+                _ => 0,
+            })
+            .unwrap_or(0);
         log::info!(
-            "[prompt-rewriter] route={:?} master={} system={} user={} status={:?}",
+            "[prompt-rewriter] route={:?} master={} system={} user={} status={:?} systemLen {}->{}",
             self.route,
             self.snapshot.config.enabled,
             preview.system_applied,
             preview.user_applied,
-            preview.file_status
+            preview.file_status,
+            system_in,
+            system_out
         );
         *body = preview.body;
         Ok(())
