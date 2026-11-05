@@ -7333,9 +7333,9 @@ mod tests {
             use crate::extensions::prompt_rewriter::Config;
             let route_config = json!({
                 "enabled": true,
-                "system": {"enabled": true, "replacement": "rewritten-system"},
+                "system": {"enabled": true, "mode": "replace", "replacement": "rewritten-system"},
                 "userInstructions": {
-                    "enabled": false, "replacement": "rewritten-file", "sourcePath": null
+                    "enabled": false, "mode": "replace", "replacement": "rewritten-file", "sourcePath": null
                 }
             });
             let config: Config = serde_json::from_value(json!({
@@ -7352,8 +7352,8 @@ mod tests {
             use crate::extensions::prompt_rewriter::Route;
             let route_config = json!({
                 "enabled": true,
-                "system": {"enabled": true, "replacement": "rewritten-system"},
-                "userInstructions": {"enabled": true, "replacement": "rewritten-file", "sourcePath": null}
+                "system": {"mode": "replace", "enabled": true, "replacement": "rewritten-system"},
+                "userInstructions": {"mode": "replace", "enabled": true, "replacement": "rewritten-file", "sourcePath": null}
             });
             let config: crate::extensions::prompt_rewriter::Config =
                 serde_json::from_value(json!({
@@ -7573,8 +7573,11 @@ mod tests {
                 };
                 route.enabled = true;
                 route.system.enabled = true;
+                route.system.mode = crate::extensions::prompt_rewriter::ApplyMode::Replace;
                 route.system.replacement = Some("rewritten-system".into());
                 route.user_instructions.enabled = true;
+                route.user_instructions.mode =
+                    crate::extensions::prompt_rewriter::ApplyMode::Replace;
                 route.user_instructions.replacement = Some("rewritten-file".into());
                 config
             };
@@ -7826,13 +7829,13 @@ mod tests {
                 "routes": {
                     "claudeDesktop": {
                         "enabled": false,
-                        "system": {"enabled": false, "replacement": null},
-                        "userInstructions": {"enabled": false, "replacement": null, "sourcePath": null}
+                        "system": {"mode": "replace", "enabled": false, "replacement": null},
+                        "userInstructions": {"mode": "replace", "enabled": false, "replacement": null, "sourcePath": null}
                     },
                     "claudeCode": {
                         "enabled": true,
-                        "system": {"enabled": true, "replacement": "old-once"},
-                        "userInstructions": {"enabled": true, "replacement": "rewritten-file", "sourcePath": null}
+                        "system": {"mode": "replace", "enabled": true, "replacement": "old-once"},
+                        "userInstructions": {"mode": "replace", "enabled": true, "replacement": "rewritten-file", "sourcePath": null}
                     }
                 }
             }))

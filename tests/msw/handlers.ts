@@ -50,8 +50,18 @@ const success = <T>(payload: T) => HttpResponse.json(payload as any);
 const promptRewriterUnavailable = (): PromptRewriterStatus => {
   const route = () => ({
     enabled: false,
-    system: { enabled: false, replacement: null },
-    userInstructions: { enabled: false, replacement: null, sourcePath: null },
+    system: {
+      enabled: false,
+      mode: "append" as const,
+      replacement: null,
+      stripSafetyNotice: false,
+    },
+    userInstructions: {
+      enabled: false,
+      mode: "append" as const,
+      replacement: null,
+      sourcePath: null,
+    },
   });
   const source = () => ({
     path: null,

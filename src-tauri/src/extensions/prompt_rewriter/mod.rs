@@ -3,11 +3,12 @@ mod adapters;
 pub mod commands;
 mod config;
 mod engine;
+mod safety_notice;
 mod sources;
 
 #[allow(unused_imports)]
 pub use config::{
-    Config, Route, RouteConfig, Routes, SystemConfig, UserInstructionsConfig, WireFormat,
+    ApplyMode, Config, Route, RouteConfig, Routes, SystemConfig, UserInstructionsConfig, WireFormat,
 };
 pub use engine::{FileStatus, Preview};
 pub use sources::{Source, SourceState, Sources};

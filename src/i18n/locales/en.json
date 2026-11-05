@@ -36,6 +36,13 @@
       "system": "Captured system original (read-only)",
       "userInstructions": "Disk file original (read-only)"
     },
+    "applyMode": "Application mode",
+    "modes": {
+      "append": "Append after the original",
+      "replace": "Replace the original"
+    },
+    "stripSafetyNotice": "Remove built-in security notice",
+    "stripSafetyNoticeHint": "Drops the built-in authorized-security-testing paragraph before applying. Leaves other text untouched.",
     "replacements": {
       "system": "System replacement (full text)",
       "userInstructions": "Instruction file replacement (full text)"

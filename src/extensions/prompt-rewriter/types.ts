@@ -8,15 +8,22 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+/** Append keeps the client's text and adds ours after it; replace drops the client's text. */
+export type ApplyMode = "append" | "replace";
+
 export interface ReplacementConfig {
   enabled: boolean;
+  mode: ApplyMode;
   replacement: string | null;
+  stripSafetyNotice: boolean;
 }
 
 export interface RouteConfig {
   enabled: boolean;
   system: ReplacementConfig;
-  userInstructions: ReplacementConfig & { sourcePath: string | null };
+  userInstructions: Omit<ReplacementConfig, "stripSafetyNotice"> & {
+    sourcePath: string | null;
+  };
 }
 
 export interface Config {

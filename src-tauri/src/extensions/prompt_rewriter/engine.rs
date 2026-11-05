@@ -2,7 +2,7 @@
 //! an absolute path resolving lexically to the selected file. The body must be the cached source text
 //! or an older snapshot of that same file, which is what resumed conversations replay.
 use super::adapters::{self, Selection};
-use super::config::{Snapshot, MAX_TEXT_BYTES};
+use super::config::{ApplyMode, Snapshot, MAX_TEXT_BYTES};
 use super::{Route, Source, SourceState, WireFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -225,6 +225,85 @@ pub(crate) fn inspect_system(
     system_text(&selection, &spans, MAX_TEXT_BYTES)
 }
 
+/// Combine the client's text with the configured text according to the target's mode.
+fn apply(mode: ApplyMode, original: &str, replacement: &str) -> String {
+    match mode {
+        ApplyMode::Replace => replacement.to_string(),
+        ApplyMode::Append => {
+            if replacement.is_empty() {
+                return original.to_string();
+            }
+            if original.is_empty() {
+                return replacement.to_string();
+            }
+            if original.ends_with('\n') {
+                format!("{original}{replacement}")
+            } else {
+                format!("{original}\n{replacement}")
+            }
+        }
+    }
+}
+
+/// Remove the built-in safety notice from every system carrier in `body`.
+fn strip_from_system(body: &mut Value, format: WireFormat) {
+    let field = match format {
+        WireFormat::Anthropic => ("system", false),
+        WireFormat::Responses => ("instructions", true),
+        WireFormat::Chat => ("messages", false),
+        WireFormat::Gemini => ("systemInstruction", false),
+    };
+    match format {
+        WireFormat::Chat => {
+            let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+                return;
+            };
+            for message in messages.iter_mut() {
+                if matches!(message["role"].as_str(), Some("system" | "developer")) {
+                    strip_in_container(&mut message["content"]);
+                }
+            }
+        }
+        WireFormat::Gemini => {
+            if let Some(parts) = body
+                .get_mut("systemInstruction")
+                .and_then(|value| value.get_mut("parts"))
+            {
+                strip_in_container(parts);
+            }
+        }
+        _ => {
+            let (name, _) = field;
+            if let Some(slot) = body.get_mut(name) {
+                strip_in_container(slot);
+            }
+        }
+    }
+}
+
+/// Strip notices from a string-or-blocks container in place.
+fn strip_in_container(container: &mut Value) {
+    match container {
+        Value::String(text) => {
+            let (stripped, _) = super::safety_notice::strip_safety_notice(text);
+            if stripped != *text {
+                *text = stripped;
+            }
+        }
+        Value::Array(blocks) => {
+            for block in blocks.iter_mut() {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    let (stripped, _) = super::safety_notice::strip_safety_notice(text);
+                    if stripped != text {
+                        block["text"] = Value::String(stripped);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn rewrite(
     snapshot: &Snapshot,
     route: Route,
@@ -232,6 +311,13 @@ pub(crate) fn rewrite(
     source: &Source,
     body: Value,
 ) -> Result<Preview, String> {
+    let strip_notice = snapshot.config.routes.get(route).system.strip_safety_notice;
+    // Removing the built-in notice changes what the client sent, so do it once up front and
+    // report it through the preview's before/after text.
+    let mut body = body;
+    if strip_notice {
+        strip_from_system(&mut body, format);
+    }
     let selection = adapters::select(&body, format)?;
     let mut spans: Vec<_> = selection
         .nodes
@@ -289,11 +375,13 @@ pub(crate) fn rewrite(
         return Ok(preview);
     }
     let config = snapshot.config.routes.get(route);
+    let system_mode = config.system.mode;
     let system = config
         .system
         .enabled
         .then_some(config.system.replacement.as_deref())
         .flatten();
+    let user_mode = config.user_instructions.mode;
     let user = config
         .user_instructions
         .enabled
@@ -374,21 +462,21 @@ pub(crate) fn rewrite(
             let chunk = &node.text[offset..span.start];
             let chunk = if node.system {
                 if let Some(replacement) = system {
-                    if !inserted && !chunk.is_empty() {
+                    if !inserted {
                         inserted = true;
-                        replacement
+                        apply(system_mode, chunk, replacement)
                     } else if offset > 0 && chunk.trim().is_empty() {
-                        chunk
+                        chunk.to_string()
                     } else {
-                        ""
+                        String::new()
                     }
                 } else {
-                    chunk
+                    chunk.to_string()
                 }
             } else {
-                chunk
+                chunk.to_string()
             };
-            rewritten.push_str(chunk);
+            rewritten.push_str(&chunk);
             if node.system
                 && system.is_some()
                 && !rewritten.is_empty()
@@ -396,10 +484,11 @@ pub(crate) fn rewrite(
             {
                 rewritten.push('\n');
             }
-            body_only.push_str(chunk);
+            body_only.push_str(&chunk);
             if let Some(replacement) = user.filter(|_| targetable(span)) {
+                let original = &node.text[span.content_start..span.content_end];
                 rewritten.push_str(&node.text[span.start..span.content_start]);
-                rewritten.push_str(replacement);
+                rewritten.push_str(&apply(user_mode, original, replacement));
                 rewritten.push_str(&node.text[span.content_end..span.end]);
             } else {
                 rewritten.push_str(&node.text[span.start..span.end]);
@@ -411,15 +500,15 @@ pub(crate) fn rewrite(
             if let Some(replacement) = system {
                 if !inserted && (!suffix.is_empty() || spans.is_empty()) {
                     inserted = true;
-                    replacement
+                    apply(system_mode, suffix, replacement)
                 } else {
-                    ""
+                    String::new()
                 }
             } else {
-                suffix
+                suffix.to_string()
             }
         } else {
-            suffix
+            suffix.to_string()
         };
         if node.system
             && system.is_some()
@@ -429,8 +518,8 @@ pub(crate) fn rewrite(
         {
             rewritten.push('\n');
         }
-        rewritten.push_str(suffix);
-        body_only.push_str(suffix);
+        rewritten.push_str(&suffix);
+        body_only.push_str(&suffix);
         if node.system {
             after_system.push(body_only);
         }

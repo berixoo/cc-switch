@@ -36,6 +36,13 @@
       "system": "取得済みシステム原文（読み取り専用）",
       "userInstructions": "ディスクのファイル原文（読み取り専用）"
     },
+    "applyMode": "適用方法",
+    "modes": {
+      "append": "元の内容の後に追加",
+      "replace": "元の内容を置き換え"
+    },
+    "stripSafetyNotice": "組み込みのセキュリティ文言を削除",
+    "stripSafetyNoticeHint": "適用前にクライアント標準の「セキュリティテスト許可」段落を削除します。他の文言は変更しません。",
     "replacements": {
       "system": "システム置換全文",
       "userInstructions": "指示ファイル置換全文"

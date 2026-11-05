@@ -37,8 +37,18 @@ const ENDPOINT = "http://tauri.local";
 const text = en.promptRewriter;
 const makeRoute = (): RouteConfig => ({
   enabled: false,
-  system: { enabled: false, replacement: null },
-  userInstructions: { enabled: false, replacement: null, sourcePath: null },
+  system: {
+    enabled: false,
+    mode: "append",
+    replacement: null,
+    stripSafetyNotice: false,
+  },
+  userInstructions: {
+    enabled: false,
+    mode: "append",
+    replacement: null,
+    sourcePath: null,
+  },
 });
 const makeConfig = (): Config => ({
   version: 2,
@@ -258,9 +268,7 @@ describe("PromptRewriterPanel full-text editing", () => {
       }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByLabelText(
-        /rule id|find pattern|mode|processing stage|target/i,
-      ),
+      screen.queryByLabelText(/rule id|find pattern|processing stage/i),
     ).not.toBeInTheDocument();
     expect(hasUnsavedChanges()).toBe(false);
     expect(screen.getByRole("button", { name: text.save })).toBeDisabled();
@@ -308,9 +316,15 @@ describe("PromptRewriterPanel full-text editing", () => {
     expected.enabled = true;
     expected.routes.claudeDesktop = {
       enabled: true,
-      system: { enabled: true, replacement: "system replacement\nfull body" },
+      system: {
+        enabled: true,
+        mode: "append",
+        replacement: "system replacement\nfull body",
+        stripSafetyNotice: false,
+      },
       userInstructions: {
         enabled: true,
+        mode: "append",
         replacement: "file replacement\nfull body",
         sourcePath: null,
       },
@@ -439,7 +453,9 @@ describe("PromptRewriterPanel full-text editing", () => {
     runtime.config.routes.claudeDesktop.enabled = true;
     runtime.config.routes.claudeDesktop.system = {
       enabled: true,
+      mode: "append",
       replacement: "desktop only",
+      stripSafetyNotice: false,
     };
     renderPanel();
     await ready();
@@ -450,9 +466,15 @@ describe("PromptRewriterPanel full-text editing", () => {
     });
     const desktop: RouteConfig = {
       enabled: true,
-      system: { enabled: true, replacement: "desktop draft" },
+      system: {
+        enabled: true,
+        mode: "append",
+        replacement: "desktop draft",
+        stripSafetyNotice: false,
+      },
       userInstructions: {
         enabled: false,
+        mode: "append",
         replacement: "desktop file",
         sourcePath: "D:/desktop/custom.md",
       },
@@ -493,9 +515,15 @@ describe("PromptRewriterPanel full-text editing", () => {
       claudeDesktop: desktop,
       claudeCode: {
         enabled: true,
-        system: { enabled: true, replacement: "cli system" },
+        system: {
+          enabled: true,
+          mode: "append",
+          replacement: "cli system",
+          stripSafetyNotice: false,
+        },
         userInstructions: {
           enabled: true,
+          mode: "append",
           replacement: "cli file",
           sourcePath: "D:/cli/CLAUDE.md",
         },
@@ -732,7 +760,9 @@ describe("PromptRewriterPanel full-text editing", () => {
     runtime.observations.claudeDesktop = captured();
     runtime.config.routes.claudeDesktop.system = {
       enabled: true,
+      mode: "append",
       replacement: "old saved replacement",
+      stripSafetyNotice: false,
     };
     renderPanel();
     await ready();
@@ -757,7 +787,9 @@ describe("PromptRewriterPanel full-text editing", () => {
     await screen.findByText(text.saved);
     expect(savedConfigs[0].routes.claudeDesktop.system).toEqual({
       enabled: false,
+      mode: "append",
       replacement: null,
+      stripSafetyNotice: false,
     });
   });
 });
@@ -1162,6 +1194,7 @@ describe("PromptRewriterPanel empty-source status", () => {
       runtime.sources[route].content = "";
       runtime.config.routes[route].userInstructions = {
         enabled: true,
+        mode: "append",
         replacement,
         sourcePath: null,
       };
@@ -1223,6 +1256,7 @@ describe("PromptRewriterPanel empty-source status", () => {
     runtime.sources.claudeDesktop.content = "";
     runtime.config.routes.claudeDesktop.userInstructions = {
       enabled: true,
+      mode: "append",
       replacement: "",
       sourcePath: null,
     };
@@ -1336,7 +1370,9 @@ describe("PromptRewriterPanel advanced preview", () => {
     async (action) => {
       runtime.config.routes.claudeDesktop.system = {
         enabled: true,
+        mode: "append",
         replacement: "saved replacement",
+        stripSafetyNotice: false,
       };
       renderPanel();
       await ready();

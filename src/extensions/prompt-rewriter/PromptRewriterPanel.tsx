@@ -453,6 +453,54 @@ export function PromptRewriterPanel() {
             });
           }}
         />
+        <FieldSelect
+          label={t("promptRewriter.applyMode")}
+          value={target.mode}
+          options={[
+            { value: "append", label: t("promptRewriter.modes.append") },
+            { value: "replace", label: t("promptRewriter.modes.replace") },
+          ]}
+          onChange={(mode) => {
+            if (!draft) return;
+            toggle({
+              ...draft,
+              routes: {
+                ...draft.routes,
+                [route]: {
+                  ...draft.routes[route],
+                  [editor]: { ...target, mode },
+                },
+              },
+            });
+          }}
+        />
+        {editor === "system" && (
+          <SettingsSwitchRow
+            label={t("promptRewriter.stripSafetyNotice")}
+            description={t("promptRewriter.stripSafetyNoticeHint")}
+            disabled={!draft.enabled}
+            checked={
+              editor === "system" &&
+              draft.routes[route].system.stripSafetyNotice === true
+            }
+            onCheckedChange={(stripSafetyNotice) => {
+              if (!draft) return;
+              toggle({
+                ...draft,
+                routes: {
+                  ...draft.routes,
+                  [route]: {
+                    ...draft.routes[route],
+                    system: {
+                      ...draft.routes[route].system,
+                      stripSafetyNotice,
+                    },
+                  },
+                },
+              });
+            }}
+          />
+        )}
         <label className="block space-y-1.5 text-body text-fg-1">
           <span>{t(`promptRewriter.replacements.${editor}`)}</span>
           <Textarea

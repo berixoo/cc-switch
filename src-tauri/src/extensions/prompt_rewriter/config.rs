@@ -27,17 +27,43 @@ pub enum WireFormat {
     Gemini,
 }
 
+/// How a target is applied to text the client already sent.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApplyMode {
+    /// Keep the client text and append the configured text after it.
+    #[default]
+    Append,
+    /// Replace the client text entirely.
+    Replace,
+}
+
+impl ApplyMode {
+    fn default_append() -> Self {
+        Self::Append
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SystemConfig {
     pub enabled: bool,
+    /// Missing in v2 files written before modes existed; those default to append.
+    #[serde(default = "ApplyMode::default_append")]
+    pub mode: ApplyMode,
     pub replacement: Option<String>,
+    /// Drop the client's built-in safety boilerplate before appending, so the appended text is
+    /// the only policy in effect. Off by default.
+    #[serde(default)]
+    pub strip_safety_notice: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserInstructionsConfig {
     pub enabled: bool,
+    #[serde(default = "ApplyMode::default_append")]
+    pub mode: ApplyMode,
     pub replacement: Option<String>,
     pub source_path: Option<String>,
 }

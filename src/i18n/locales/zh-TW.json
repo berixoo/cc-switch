@@ -36,6 +36,13 @@
       "system": "已取得的系統原文（唯讀）",
       "userInstructions": "磁碟檔案原文（唯讀）"
     },
+    "applyMode": "套用方式",
+    "modes": {
+      "append": "附加在原內容之後",
+      "replace": "取代原內容"
+    },
+    "stripSafetyNotice": "移除內建安全聲明",
+    "stripSafetyNoticeHint": "套用前刪除用戶端自帶的「安全測試授權」段落，其他內容不動。",
     "replacements": {
       "system": "系統替換全文",
       "userInstructions": "指令檔替換全文"

@@ -7,10 +7,13 @@ fn config(system: Option<&str>, user: Option<&str>) -> Config {
         enabled: true,
         system: SystemConfig {
             enabled: system.is_some(),
+            mode: ApplyMode::Replace,
+            strip_safety_notice: false,
             replacement: system.map(str::to_string),
         },
         user_instructions: UserInstructionsConfig {
             enabled: user.is_some(),
+            mode: ApplyMode::Replace,
             replacement: user.map(str::to_string),
             source_path: None,
         },
@@ -321,9 +324,89 @@ fn posix_backslash_is_a_literal_path_character_not_a_directory_separator() {
 }
 
 #[test]
+fn append_mode_keeps_the_client_text_and_adds_ours_after_it() {
+    let source = source(Route::ClaudeCode);
+    let wrapper = envelope(Route::ClaudeCode, &source);
+    let mut cfg = config(Some("extra system"), Some("extra file"));
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    cfg.routes.claude_code.user_instructions.mode = ApplyMode::Append;
+    let body = json!({"system":"client system","messages":[{"role":"user","content":wrapper}]});
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    assert!(preview.system_applied && preview.user_applied);
+    assert_eq!(
+        preview.body["system"],
+        "client system
+extra system",
+        "system text is preserved and ours is appended"
+    );
+    let rewritten = preview.body["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        rewritten.contains("Original global instructions."),
+        "{rewritten}"
+    );
+    assert!(rewritten.contains("extra file"), "{rewritten}");
+    assert!(
+        rewritten.find("Original global instructions.") < rewritten.find("extra file"),
+        "appended text goes after the original: {rewritten}"
+    );
+}
+
+#[test]
+fn replace_mode_still_drops_the_client_text() {
+    let source = source(Route::ClaudeCode);
+    let wrapper = envelope(Route::ClaudeCode, &source);
+    let mut cfg = config(Some("only ours"), Some("only file"));
+    cfg.routes.claude_code.system.mode = ApplyMode::Replace;
+    cfg.routes.claude_code.user_instructions.mode = ApplyMode::Replace;
+    let body = json!({"system":"client system","messages":[{"role":"user","content":wrapper}]});
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    assert_eq!(preview.body["system"], "only ours");
+    let rewritten = preview.body["messages"][0]["content"].as_str().unwrap();
+    assert!(rewritten.contains("only file"));
+    assert!(!rewritten.contains("Original global instructions."));
+}
+
+#[test]
+fn stripping_removes_the_security_notice_before_appending() {
+    let source = source(Route::ClaudeCode);
+    let notice = "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.";
+    let mut cfg = config(Some("our policy"), None);
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    cfg.routes.claude_code.system.strip_safety_notice = true;
+    let body = json!({
+        "system": format!("Header.
+
+{notice}
+IMPORTANT: You must NEVER generate or guess URLs."),
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let system = preview.body["system"].as_str().unwrap();
+    assert!(!system.contains("defensive security"), "{system}");
+    assert!(system.contains("Header."), "{system}");
+    assert!(system.contains("NEVER generate or guess URLs"), "{system}");
+    assert!(system.contains("our policy"), "{system}");
+}
+
+#[test]
+fn stripping_is_off_by_default_and_never_touches_other_text() {
+    let source = source(Route::ClaudeCode);
+    let mut cfg = config(Some("our policy"), None);
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    let body = json!({"system":"keep defensive security mention","messages":[{"role":"user","content":"chat"}]});
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let system = preview.body["system"].as_str().unwrap();
+    assert!(
+        system.contains("keep defensive security mention"),
+        "{system}"
+    );
+}
+
+#[test]
 fn schema_v2_is_exact_all_defaults_off_and_every_nested_object_rejects_unknown_fields() {
-    let target = json!({"enabled":false,"replacement":null});
-    let user = json!({"enabled":false,"replacement":null,"sourcePath":null});
+    let target =
+        json!({"enabled":false,"mode":"append","replacement":null,"stripSafetyNotice":false});
+    let user = json!({"enabled":false,"mode":"append","replacement":null,"sourcePath":null});
     let route = json!({"enabled":false,"system":target,"userInstructions":user});
     let expected =
         json!({"version":2,"enabled":false,"routes":{"claudeDesktop":route,"claudeCode":route}});
