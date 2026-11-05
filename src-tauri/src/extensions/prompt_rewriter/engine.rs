@@ -560,15 +560,13 @@ pub(crate) fn rewrite(
     }
     preview.user_applied = user.is_some() && count >= 1;
     preview.system_applied = system.is_some();
-    if let Some(replacement) = system {
-        // Full replacement is one logical body even when original system text spanned carriers.
-        preview.system_after = if replacement.is_empty() {
-            None
-        } else {
-            Some(replacement.to_string())
-        };
-    } else if !after_system.is_empty() {
-        preview.system_after = Some(after_system.join("\n"));
-    }
+    // Report what actually goes on the wire. In append mode that is the client text plus ours,
+    // so echoing only the configured text would misreport the result.
+    let reported = after_system.join("\n");
+    preview.system_after = if reported.trim().is_empty() {
+        None
+    } else {
+        Some(reported)
+    };
     Ok(preview)
 }
