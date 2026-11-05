@@ -36,6 +36,11 @@
       "system": "取得済みシステム原文（読み取り専用）",
       "userInstructions": "ディスクのファイル原文（読み取り専用）"
     },
+    "appendPosition": "追加位置",
+    "positions": {
+      "start": "先頭（ヘッダーの後）",
+      "end": "末尾"
+    },
     "applyMode": "適用方法",
     "modes": {
       "append": "元の内容の後に追加",

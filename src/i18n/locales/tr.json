@@ -36,6 +36,11 @@
       "system": "Yakalanan özgün sistem metni (salt okunur)",
       "userInstructions": "Diskteki özgün dosya (salt okunur)"
     },
+    "appendPosition": "Ekleme konumu",
+    "positions": {
+      "start": "Başlangıç (başlıktan sonra)",
+      "end": "Son"
+    },
     "applyMode": "Uygulama biçimi",
     "modes": {
       "append": "Özgün metnin ardına ekle",

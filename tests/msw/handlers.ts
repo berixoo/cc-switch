@@ -53,12 +53,14 @@ const promptRewriterUnavailable = (): PromptRewriterStatus => {
     system: {
       enabled: false,
       mode: "append" as const,
+      position: "end" as const,
       replacement: null,
       stripSafetyNotice: false,
     },
     userInstructions: {
       enabled: false,
       mode: "append" as const,
+      position: "end" as const,
       replacement: null,
       sourcePath: null,
     },

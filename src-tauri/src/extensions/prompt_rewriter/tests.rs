@@ -8,12 +8,14 @@ fn config(system: Option<&str>, user: Option<&str>) -> Config {
         system: SystemConfig {
             enabled: system.is_some(),
             mode: ApplyMode::Replace,
+            position: AppendPosition::End,
             strip_safety_notice: false,
             replacement: system.map(str::to_string),
         },
         user_instructions: UserInstructionsConfig {
             enabled: user.is_some(),
             mode: ApplyMode::Replace,
+            position: AppendPosition::End,
             replacement: user.map(str::to_string),
             source_path: None,
         },
@@ -440,6 +442,75 @@ TAIL SECTION."
 }
 
 #[test]
+fn append_start_places_our_text_after_the_client_header() {
+    let source = source(Route::ClaudeDesktop);
+    let mut cfg = config(Some("OUR PRIORITY RULES"), None);
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    cfg.routes.claude_desktop.system.position = AppendPosition::Start;
+    let client = "x-anthropic-billing-header: billing marker
+
+You are Claude Code.
+
+Long instructions here.";
+    let body = json!({"system": client, "messages": [{"role":"user","content":"chat"}]});
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    let system = preview.body["system"].as_str().unwrap();
+    // The billing header must stay first; ours lands right after it and before the instructions.
+    assert!(
+        system.starts_with("x-anthropic-billing-header: billing marker"),
+        "{system}"
+    );
+    let ours = system.find("OUR PRIORITY RULES").unwrap();
+    let instructions = system.find("You are Claude Code.").unwrap();
+    assert!(
+        ours < instructions,
+        "ours must precede the client body: {system}"
+    );
+    assert!(
+        system.ends_with("Long instructions here."),
+        "client body kept whole"
+    );
+}
+
+#[test]
+fn append_start_without_a_header_prepends() {
+    let source = source(Route::ClaudeDesktop);
+    let mut cfg = config(Some("FIRST"), None);
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    cfg.routes.claude_desktop.system.position = AppendPosition::Start;
+    let body =
+        json!({"system":"Plain instructions.","messages":[{"role":"user","content":"chat"}]});
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    assert_eq!(
+        preview.body["system"],
+        "FIRST
+Plain instructions."
+    );
+}
+
+#[test]
+fn append_end_is_still_the_default() {
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    assert_eq!(
+        cfg.routes.claude_desktop.system.position,
+        AppendPosition::End
+    );
+}
+
+#[test]
 fn replace_mode_still_drops_the_client_text() {
     let source = source(Route::ClaudeCode);
     let wrapper = envelope(Route::ClaudeCode, &source);
@@ -492,9 +563,8 @@ fn stripping_is_off_by_default_and_never_touches_other_text() {
 
 #[test]
 fn schema_v2_is_exact_all_defaults_off_and_every_nested_object_rejects_unknown_fields() {
-    let target =
-        json!({"enabled":false,"mode":"append","replacement":null,"stripSafetyNotice":false});
-    let user = json!({"enabled":false,"mode":"append","replacement":null,"sourcePath":null});
+    let target = json!({"enabled":false,"mode":"append","position":"end","replacement":null,"stripSafetyNotice":false});
+    let user = json!({"enabled":false,"mode":"append","position":"end","replacement":null,"sourcePath":null});
     let route = json!({"enabled":false,"system":target,"userInstructions":user});
     let expected =
         json!({"version":2,"enabled":false,"routes":{"claudeDesktop":route,"claudeCode":route}});

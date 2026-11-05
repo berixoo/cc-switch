@@ -11,9 +11,13 @@ export type JsonValue =
 /** Append keeps the client's text and adds ours after it; replace drops the client's text. */
 export type ApplyMode = "append" | "replace";
 
+/** Where appended text lands relative to the client's own text. */
+export type AppendPosition = "start" | "end";
+
 export interface ReplacementConfig {
   enabled: boolean;
   mode: ApplyMode;
+  position: AppendPosition;
   replacement: string | null;
   stripSafetyNotice: boolean;
 }

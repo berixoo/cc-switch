@@ -8,7 +8,8 @@ mod sources;
 
 #[allow(unused_imports)]
 pub use config::{
-    ApplyMode, Config, Route, RouteConfig, Routes, SystemConfig, UserInstructionsConfig, WireFormat,
+    AppendPosition, ApplyMode, Config, Route, RouteConfig, Routes, SystemConfig,
+    UserInstructionsConfig, WireFormat,
 };
 pub use engine::{FileStatus, Preview};
 pub use sources::{Source, SourceState, Sources};

@@ -2,7 +2,7 @@
 //! an absolute path resolving lexically to the selected file. The body must be the cached source text
 //! or an older snapshot of that same file, which is what resumed conversations replay.
 use super::adapters::{self, Selection};
-use super::config::{ApplyMode, Snapshot, MAX_TEXT_BYTES};
+use super::config::{AppendPosition, ApplyMode, Snapshot, MAX_TEXT_BYTES};
 use super::{Route, Source, SourceState, WireFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -226,7 +226,7 @@ pub(crate) fn inspect_system(
 }
 
 /// Combine the client's text with the configured text according to the target's mode.
-fn apply(mode: ApplyMode, original: &str, replacement: &str) -> String {
+fn apply(mode: ApplyMode, position: AppendPosition, original: &str, replacement: &str) -> String {
     match mode {
         ApplyMode::Replace => replacement.to_string(),
         ApplyMode::Append => {
@@ -236,13 +236,55 @@ fn apply(mode: ApplyMode, original: &str, replacement: &str) -> String {
             if original.is_empty() {
                 return replacement.to_string();
             }
-            if original.ends_with('\n') {
-                format!("{original}{replacement}")
-            } else {
-                format!("{original}\n{replacement}")
+            match position {
+                AppendPosition::End => {
+                    if original.ends_with('\n') {
+                        format!("{original}{replacement}")
+                    } else {
+                        format!("{original}\n{replacement}")
+                    }
+                }
+                AppendPosition::Start => {
+                    // Leading header lines (billing markers, identity lines) are metadata the
+                    // client relies on; insert after them so they stay first.
+                    let split = leading_header_end(original);
+                    let (head, body) = original.split_at(split);
+                    if head.is_empty() {
+                        format!("{replacement}\n{body}")
+                    } else if body.is_empty() {
+                        format!("{head}{replacement}")
+                    } else {
+                        format!("{head}{replacement}\n{body}")
+                    }
+                }
             }
         }
     }
+}
+
+/// Byte offset just past the run of leading `key: value` header lines, or 0 when the text does
+/// not start with such lines.
+fn leading_header_end(text: &str) -> usize {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        let is_header = trimmed.split_once(':').is_some_and(|(key, _)| {
+            !key.is_empty()
+                && key.len() <= 64
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ')
+        });
+        if !is_header {
+            break;
+        }
+        offset += line.len();
+    }
+    // Keep the blank separator that follows a header block with the header.
+    if offset > 0 && text[offset..].starts_with('\n') {
+        offset += 1;
+    }
+    offset
 }
 
 /// Remove the built-in safety notice from every system carrier in `body`.
@@ -376,12 +418,14 @@ pub(crate) fn rewrite(
     }
     let config = snapshot.config.routes.get(route);
     let system_mode = config.system.mode;
+    let system_position = config.system.position;
     let system = config
         .system
         .enabled
         .then_some(config.system.replacement.as_deref())
         .flatten();
     let user_mode = config.user_instructions.mode;
+    let user_position = config.user_instructions.position;
     let user = config
         .user_instructions
         .enabled
@@ -464,7 +508,7 @@ pub(crate) fn rewrite(
                 if let Some(replacement) = system {
                     if !inserted {
                         inserted = true;
-                        apply(system_mode, chunk, replacement)
+                        apply(system_mode, system_position, chunk, replacement)
                     } else if offset > 0 && chunk.trim().is_empty() {
                         chunk.to_string()
                     } else {
@@ -488,7 +532,7 @@ pub(crate) fn rewrite(
             if let Some(replacement) = user.filter(|_| targetable(span)) {
                 let original = &node.text[span.content_start..span.content_end];
                 rewritten.push_str(&node.text[span.start..span.content_start]);
-                rewritten.push_str(&apply(user_mode, original, replacement));
+                rewritten.push_str(&apply(user_mode, user_position, original, replacement));
                 rewritten.push_str(&node.text[span.content_end..span.end]);
             } else {
                 rewritten.push_str(&node.text[span.start..span.end]);
@@ -500,7 +544,7 @@ pub(crate) fn rewrite(
             if let Some(replacement) = system {
                 if !inserted && (!suffix.is_empty() || spans.is_empty()) {
                     inserted = true;
-                    apply(system_mode, suffix, replacement)
+                    apply(system_mode, system_position, suffix, replacement)
                 } else {
                     String::new()
                 }

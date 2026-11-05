@@ -474,6 +474,29 @@ export function PromptRewriterPanel() {
             });
           }}
         />
+        {target.mode === "append" && (
+          <FieldSelect
+            label={t("promptRewriter.appendPosition")}
+            value={target.position ?? "end"}
+            options={[
+              { value: "start", label: t("promptRewriter.positions.start") },
+              { value: "end", label: t("promptRewriter.positions.end") },
+            ]}
+            onChange={(position) => {
+              if (!draft) return;
+              toggle({
+                ...draft,
+                routes: {
+                  ...draft.routes,
+                  [route]: {
+                    ...draft.routes[route],
+                    [editor]: { ...target, position },
+                  },
+                },
+              });
+            }}
+          />
+        )}
         {editor === "system" && (
           <SettingsSwitchRow
             label={t("promptRewriter.stripSafetyNotice")}
