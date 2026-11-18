@@ -208,6 +208,7 @@ fn test_forwarder(
         failover_chain: false,
         last_outbound_model: std::sync::Mutex::new(None),
         privacy_filter: PrivacyFilterConfig::default(),
+        prompt_rewrite: None,
     }
 }
 
@@ -5294,5 +5295,776 @@ mod bookkeeping {
         assert!(!requests[1].to_string().contains("\"signature\""));
         assert_eq!(books(&fwd).await, untouched());
         assert!(breaker_untouched(&fwd, "kimi").await);
+    }
+}
+
+/// Prompt rewriter coverage: runs the extension against the real forwarder pipeline.
+mod prompt_rewriter {
+    use super::*;
+    use tokio::sync::Mutex;
+
+    struct Upstream {
+        base_url: String,
+        seen: Arc<Mutex<Vec<Seen>>>,
+    }
+
+    struct Seen {
+        headers: HeaderMap,
+        body: Value,
+    }
+
+    async fn upstream() -> Upstream {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = {
+            let seen = seen.clone();
+            axum::Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
+                let seen = seen.clone();
+                async move {
+                    seen.lock().await.push(Seen {
+                        headers,
+                        body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+                    });
+                    (
+                        StatusCode::OK,
+                        [(http::header::CONTENT_TYPE, "application/json")],
+                        json!({ "id": "r1", "object": "response", "output": [] }).to_string(),
+                    )
+                }
+            })
+        };
+        Upstream {
+            base_url: serve_upstream(app).await,
+            seen,
+        }
+    }
+
+    async fn raw_upstream(script: Vec<(u16, &'static str, String)>) -> Upstream {
+        let script = Arc::new(Mutex::new(std::collections::VecDeque::from(script)));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = {
+            let seen = seen.clone();
+            axum::Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
+                let script = script.clone();
+                let seen = seen.clone();
+                async move {
+                    seen.lock().await.push(Seen {
+                        headers,
+                        body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+                    });
+                    let (status, content_type, body) = script
+                        .lock()
+                        .await
+                        .pop_front()
+                        .expect("upstream script exhausted");
+                    (
+                        StatusCode::from_u16(status).expect("status"),
+                        [(http::header::CONTENT_TYPE, content_type)],
+                        body,
+                    )
+                }
+            })
+        };
+        Upstream {
+            base_url: serve_upstream(app).await,
+            seen,
+        }
+    }
+
+    fn forwarder(stack: bool) -> RequestForwarder {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        test_forwarder(Duration::from_secs(5), Duration::from_secs(5)).stack_request(stack)
+    }
+
+    fn sse(events: &[Value]) -> (u16, &'static str, String) {
+        let body = events
+            .iter()
+            .map(|event| {
+                format!(
+                    "event: {}\ndata: {event}\n\n",
+                    event["type"].as_str().unwrap()
+                )
+            })
+            .collect::<String>();
+        (200, "text/event-stream", body)
+    }
+
+    async fn body_text(result: ForwardResult) -> String {
+        let chunks: Vec<_> = result.response.bytes_stream().collect().await;
+        let bytes: Vec<u8> = chunks
+            .into_iter()
+            .flat_map(|chunk| chunk.expect("chunk").to_vec())
+            .collect();
+        String::from_utf8(bytes).expect("utf8")
+    }
+
+    fn chatgpt_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("content-type", "application/json"),
+            ("authorization", "Bearer chatgpt-access-token"),
+            ("chatgpt-account-id", "acct-workspace"),
+            ("originator", "codex_cli_rs"),
+            ("session_id", "session-1"),
+            ("x-codex-beta-features", "remote_compaction_v2"),
+            ("x-codex-turn-state", "state"),
+            ("openai-beta", "responses=experimental"),
+            ("x-oai-attestation", "device-proof"),
+            ("x-openai-fedramp", "true"),
+        ] {
+            headers.insert(
+                http::HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        headers
+    }
+
+    fn test_provider_with_type(provider_type: Option<&str>) -> Provider {
+        Provider {
+            id: "provider-1".to_string(),
+            name: "Provider 1".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: provider_type.map(|value| crate::provider::ProviderMeta {
+                provider_type: Some(value.to_string()),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
+    #[test]
+    fn prompt_rewriter_master_switch_off_leaves_real_requests_untouched() {
+        use crate::extensions::prompt_rewriter::Route;
+        let route_config = json!({
+            "enabled": true,
+            "system": {"mode": "replace", "enabled": true, "replacement": "rewritten-system"},
+            "userInstructions": {"mode": "replace", "enabled": true, "replacement": "rewritten-file", "sourcePath": null}
+        });
+        let config: crate::extensions::prompt_rewriter::Config = serde_json::from_value(json!({
+            "version": 2,
+            "enabled": false,
+            "routes": { "claudeCode": route_config, "claudeDesktop": route_config }
+        }))
+        .unwrap();
+        let context = RewriteContext::for_test(config, Route::ClaudeCode).unwrap();
+        let original = json!({
+            "system": "client-system",
+            "messages": [{"role": "user", "content": "client-user"}]
+        });
+        let mut body = original.clone();
+        context.rewrite_ingress(&mut body).unwrap();
+        assert_eq!(
+            body, original,
+            "master switch off must not rewrite anything"
+        );
+        assert!(!context.system_enabled());
+        assert!(!context.user_instructions_enabled());
+    }
+
+    #[test]
+    fn prompt_rewriter_preserves_original_conversation_fingerprint() {
+        use crate::extensions::prompt_rewriter::Route;
+        let first = json!({
+            "system": "s",
+            "messages": [{"role": "user", "content": "old"}]
+        });
+        let later = json!({
+            "system": "s",
+            "messages": [
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "answer"},
+                {"role": "user", "content": "next"}
+            ]
+        });
+        let first_fingerprint = conversation_fingerprint(&first);
+        let later_fingerprint = conversation_fingerprint(&later);
+        assert_eq!(first_fingerprint, later_fingerprint);
+        let first_context = rewrite_context_for(Route::ClaudeDesktop);
+        let later_context = rewrite_context_for(Route::ClaudeDesktop);
+        assert_eq!(conversation_fingerprint(&first), first_fingerprint);
+        assert_eq!(conversation_fingerprint(&later), later_fingerprint);
+        // Ingress routing metadata uses the original body; replacement does not change it.
+        let mut first_wire = first.clone();
+        let mut later_wire = later.clone();
+        first_context.rewrite_ingress(&mut first_wire).unwrap();
+        later_context.rewrite_ingress(&mut later_wire).unwrap();
+        assert_eq!(first_wire["system"], "rewritten-system");
+        assert_eq!(first_wire["messages"], first["messages"]);
+        assert_eq!(later_wire["messages"], later["messages"]);
+        assert_eq!(conversation_fingerprint(&first), first_fingerprint);
+        assert_eq!(conversation_fingerprint(&later), later_fingerprint);
+        assert_eq!(
+            conversation_fingerprint(&first_wire),
+            conversation_fingerprint(&later_wire)
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_claude_ingress_system_supports_all_upstream_formats() {
+        use crate::extensions::prompt_rewriter::Route;
+        let upstream = upstream().await;
+        for (app, route) in [
+            (AppType::Claude, Route::ClaudeCode),
+            (AppType::ClaudeDesktop, Route::ClaudeDesktop),
+        ] {
+            for api_format in [
+                "anthropic",
+                "openai_chat",
+                "openai_responses",
+                "gemini_native",
+            ] {
+                let request = json!({
+                    "model": "desktop-model", "max_tokens": 32, "stream": false,
+                    "system": "client-system",
+                    "messages": [{ "role": "user", "content": "client-user" }]
+                });
+                let rewrite = rewrite_context_for(route);
+                let mut provider = test_provider_with_type(None);
+                provider.settings_config = json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": upstream.base_url,
+                        "ANTHROPIC_AUTH_TOKEN": "sk-local-mock"
+                    }
+                });
+                provider.meta = Some(crate::provider::ProviderMeta {
+                    api_format: Some(api_format.into()),
+                    claude_desktop_model_routes: [(
+                        "desktop-model".to_string(),
+                        crate::provider::ClaudeDesktopModelRoute {
+                            model: "upstream-model".to_string(),
+                            label_override: None,
+                            supports_1m: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                });
+                forwarder(false)
+                    .prompt_rewrite(Some(rewrite))
+                    .forward_with_retry(
+                        &app,
+                        http::Method::POST,
+                        "/v1/messages",
+                        &request,
+                        HeaderMap::new(),
+                        Extensions::new(),
+                        &[provider],
+                    )
+                    .await
+                    .map_err(|error| error.error)
+                    .expect("desktop forward");
+                let seen = upstream.seen.lock().await.pop().unwrap();
+                let wire = seen.body.to_string();
+                assert!(!wire.contains("rewritten-file"), "{api_format}: {wire}");
+                assert!(wire.contains("rewritten-system"), "{api_format}: {wire}");
+                assert!(!wire.contains("client-system"), "{api_format}: {wire}");
+                assert!(wire.contains("client-user"), "{api_format}: {wire}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_claude_stream_preserves_tool_continuation() {
+        use crate::extensions::prompt_rewriter::Route;
+        let response = sse(&[
+            json!({"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","model":"listed","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"stream-kept"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}),
+            json!({"type":"message_stop"}),
+        ]);
+        for (app, route) in [
+            (AppType::Claude, Route::ClaudeCode),
+            (AppType::ClaudeDesktop, Route::ClaudeDesktop),
+        ] {
+            let upstream = raw_upstream(vec![response.clone()]).await;
+            let mut provider = test_provider_with_type(None);
+            provider.settings_config = json!({"env": {
+                "ANTHROPIC_BASE_URL": upstream.base_url,
+                "ANTHROPIC_AUTH_TOKEN": "sk-local-mock"
+            }});
+            provider.meta = Some(crate::provider::ProviderMeta {
+                api_format: Some("anthropic".into()),
+                claude_desktop_model_routes: [(
+                    "listed".into(),
+                    crate::provider::ClaudeDesktopModelRoute {
+                        model: "listed".into(),
+                        label_override: None,
+                        supports_1m: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            });
+            let request = json!({
+                "model":"listed", "max_tokens":32, "stream":true,
+                "system":"client-system",
+                "tools":[{"name":"lookup","description":"fixture","input_schema":{"type":"object","properties":{}}}],
+                "messages":[
+                    {"role":"user","content":"client-user"},
+                    {"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"lookup","input":{}}]},
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"client-system inside tool output must stay"}]}
+                ]
+            });
+            let result = forwarder(false)
+                .prompt_rewrite(Some(rewrite_context_for(route)))
+                .forward_with_retry(
+                    &app,
+                    http::Method::POST,
+                    "/v1/messages",
+                    &request.clone(),
+                    HeaderMap::new(),
+                    Extensions::new(),
+                    &[provider],
+                )
+                .await
+                .map_err(|error| error.error)
+                .expect("streaming tool continuation");
+            let text = tokio::time::timeout(Duration::from_secs(5), body_text(result))
+                .await
+                .expect("stream completes");
+            assert_eq!(text, response.2);
+            let seen = upstream.seen.lock().await;
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].body["system"], "rewritten-system");
+            assert_eq!(seen[0].body["messages"], request["messages"]);
+            assert_eq!(seen[0].body["tools"], request["tools"]);
+            assert_eq!(seen[0].body["stream"], true);
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_file_and_system_survive_claude_protocol_conversion() {
+        use crate::extensions::prompt_rewriter::{Config, Route, Source, SourceState};
+        let upstream = upstream().await;
+        let source_path = "C:/prompt-rewriter-fixture/.claude/CLAUDE.md";
+        let source = Source {
+            path: Some(source_path.into()),
+            content: Some("global-source".into()),
+            state: SourceState::Ready,
+            error: None,
+            loaded_at: Some(1),
+        };
+        let config = |route| {
+            let mut config = Config::default();
+            config.enabled = true;
+            let route = match route {
+                Route::ClaudeCode => &mut config.routes.claude_code,
+                _ => &mut config.routes.claude_desktop,
+            };
+            route.enabled = true;
+            route.system.enabled = true;
+            route.system.mode = crate::extensions::prompt_rewriter::ApplyMode::Replace;
+            route.system.replacement = Some("rewritten-system".into());
+            route.user_instructions.enabled = true;
+            route.user_instructions.mode = crate::extensions::prompt_rewriter::ApplyMode::Replace;
+            route.user_instructions.replacement = Some("rewritten-file".into());
+            config
+        };
+        let global = format!(
+                    "<system-reminder>\nContents of {source_path} (user's private global instructions for all projects):\n\nglobal-source\n</system-reminder>"
+                );
+        let project = "<system-reminder>\nContents of C:/prompt-rewriter-fixture/project/CLAUDE.md (user's private global instructions for all projects):\n\nproject-kept\n</system-reminder>";
+        for empty in [false, true] {
+            let mut source = source.clone();
+            let global = if empty {
+                source.content = Some(String::new());
+                String::new()
+            } else {
+                global.clone()
+            };
+            for (app, route) in [
+                (AppType::Claude, Route::ClaudeCode),
+                (AppType::ClaudeDesktop, Route::ClaudeDesktop),
+            ] {
+                for api_format in [
+                    "anthropic",
+                    "openai_chat",
+                    "openai_responses",
+                    "gemini_native",
+                ] {
+                    let request = json!({
+                        "model": "desktop-model", "max_tokens": 32, "stream": false,
+                        "system": format!("client-system\n{global}\n{project}"),
+                        "messages": [{"role": "user", "content": "chat global-source"}]
+                    });
+                    let rewrite =
+                        RewriteContext::for_test_with_source(config(route), route, source.clone())
+                            .unwrap();
+                    let mut provider = test_provider_with_type(None);
+                    provider.settings_config = json!({"env": {
+                        "ANTHROPIC_BASE_URL": upstream.base_url,
+                        "ANTHROPIC_AUTH_TOKEN": "sk-local-mock"
+                    }});
+                    provider.meta = Some(crate::provider::ProviderMeta {
+                        api_format: Some(api_format.into()),
+                        claude_desktop_model_routes: [(
+                            "desktop-model".to_string(),
+                            crate::provider::ClaudeDesktopModelRoute {
+                                model: "upstream-model".to_string(),
+                                label_override: None,
+                                supports_1m: None,
+                            },
+                        )]
+                        .into_iter()
+                        .collect(),
+                        ..Default::default()
+                    });
+                    forwarder(false)
+                        .prompt_rewrite(Some(rewrite))
+                        .forward_with_retry(
+                            &app,
+                            http::Method::POST,
+                            "/v1/messages",
+                            &request,
+                            HeaderMap::new(),
+                            Extensions::new(),
+                            &[provider],
+                        )
+                        .await
+                        .map_err(|error| error.error)
+                        .expect("desktop instruction forward");
+                    let seen = upstream.seen.lock().await.pop().unwrap();
+                    let wire = seen.body.to_string();
+                    assert!(wire.contains("rewritten-system"), "{api_format}: {wire}");
+                    // A non-empty source replaces the envelope in place; an empty source has
+                    // no envelope and nothing is added.
+                    assert_eq!(
+                        wire.matches("rewritten-file").count(),
+                        usize::from(!empty),
+                        "{api_format}: {wire}"
+                    );
+                    assert!(wire.contains("project-kept"), "{api_format}: {wire}");
+                    assert!(wire.contains("chat global-source"), "{api_format}: {wire}");
+                    assert_eq!(
+                        wire.matches("global-source").count(),
+                        1,
+                        "{api_format}: {wire}"
+                    );
+                    assert!(!wire.contains("client-system"), "{api_format}: {wire}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_rewriter_rejects_late_prompt_overrides_but_allows_sampling() {
+        use crate::extensions::prompt_rewriter::{Config, Route};
+        let system = rewrite_context();
+        for (body, patch) in [
+            (json!({"system":"replacement"}), json!({"system":"late"})),
+            (
+                json!({"instructions":"replacement"}),
+                json!({"instructions":null}),
+            ),
+            (
+                json!({"systemInstruction":{"parts":[{"text":"replacement"}]}}),
+                json!({"systemInstruction":{"parts":[]}}),
+            ),
+            (
+                json!({"messages":[{"role":"system","content":"replacement"},{"role":"user","content":"chat"}]}),
+                json!({"messages":[{"role":"user","content":"chat"}]}),
+            ),
+            (
+                json!({"input":[{"role":"developer","content":"replacement"}]}),
+                json!({"input":"chat"}),
+            ),
+        ] {
+            let original = body.clone();
+            let conflict = LocalProxyRequestOverrides {
+                body: Some(patch),
+                ..Default::default()
+            };
+            assert!(validate_prompt_body_overrides(&system, &body, &conflict).is_err());
+            assert_eq!(body, original);
+            for patch in [json!({"temperature":0.25}), body.clone()] {
+                let allowed = LocalProxyRequestOverrides {
+                    body: Some(patch),
+                    ..Default::default()
+                };
+                assert!(validate_prompt_body_overrides(&system, &body, &allowed).is_ok());
+            }
+        }
+        let mut config = Config::default();
+        config.enabled = true;
+        config.routes.claude_code.enabled = true;
+        config.routes.claude_code.user_instructions.enabled = true;
+        config.routes.claude_code.user_instructions.replacement = Some(String::new());
+        let file = RewriteContext::for_test(config, Route::ClaudeCode).unwrap();
+        for field in [
+            "messages",
+            "input",
+            "contents",
+            "system",
+            "instructions",
+            "systemInstruction",
+        ] {
+            let body = json!({field: "protected carrier"});
+            let overrides = LocalProxyRequestOverrides {
+                body: Some(json!({field: null})),
+                ..Default::default()
+            };
+            assert!(
+                validate_prompt_body_overrides(&file, &body, &overrides).is_err(),
+                "{field}"
+            );
+            let off = RewriteContext::for_test(Config::default(), Route::ClaudeCode).unwrap();
+            assert!(validate_prompt_body_overrides(&off, &body, &overrides).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_conflicting_override_never_reaches_upstream() {
+        let upstream = upstream().await;
+        for (format, patch) in [
+            ("openai_responses", json!({"instructions":"late"})),
+            ("openai_chat", json!({"messages":[]})),
+            ("anthropic", json!({"system":"late"})),
+            ("gemini_native", json!({"systemInstruction":null})),
+        ] {
+            let mut provider = claude_provider(&upstream, format);
+            provider
+                .meta
+                .as_mut()
+                .unwrap()
+                .local_proxy_request_overrides = Some(LocalProxyRequestOverrides {
+                body: Some(patch),
+                ..Default::default()
+            });
+            let result = forwarder(false)
+                .prompt_rewrite(Some(rewrite_context()))
+                .forward_with_retry(
+                    &AppType::Claude,
+                    http::Method::POST,
+                    "/v1/messages",
+                    &claude_request(),
+                    HeaderMap::new(),
+                    Extensions::new(),
+                    &[provider],
+                )
+                .await;
+            let error = result.err().expect("conflicting override rejected");
+            assert!(
+                error.error.to_string().contains("conflict"),
+                "{}",
+                error.error
+            );
+            assert!(upstream.seen.lock().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_override_conflict_fails_over_without_sending_conflicting_body() {
+        use crate::extensions::prompt_rewriter::Route;
+        for (app, route) in [
+            (AppType::Claude, Route::ClaudeCode),
+            (AppType::ClaudeDesktop, Route::ClaudeDesktop),
+        ] {
+            let blocked = upstream().await;
+            let success = upstream().await;
+            let mut conflicting = claude_provider(&blocked, "anthropic");
+            conflicting.id = "conflicting".into();
+            conflicting
+                .meta
+                .as_mut()
+                .unwrap()
+                .local_proxy_request_overrides = Some(LocalProxyRequestOverrides {
+                body: Some(json!({"system":"late-conflict"})),
+                ..Default::default()
+            });
+            let mut clean = claude_provider(&success, "anthropic");
+            clean.id = "clean".into();
+            let mut fwd = forwarder(false).prompt_rewrite(Some(rewrite_context_for(route)));
+            fwd.max_attempts = 2;
+            fwd.forward_with_retry(
+                &app,
+                http::Method::POST,
+                "/v1/messages",
+                &claude_request(),
+                HeaderMap::new(),
+                Extensions::new(),
+                &[conflicting, clean],
+            )
+            .await
+            .map_err(|error| error.error)
+            .expect("provider-local conflict must allow clean-provider failover");
+            assert!(blocked.seen.lock().await.is_empty());
+            let seen = success.seen.lock().await;
+            assert_eq!(seen.len(), 1);
+            let wire = seen[0].body.to_string();
+            assert_eq!(wire.matches("rewritten-system").count(), 1, "{wire}");
+            assert!(wire.contains("hi"), "{wire}");
+            assert!(!wire.contains("late-conflict"), "{wire}");
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_cross_protocol_failover_does_not_accumulate() {
+        use crate::extensions::prompt_rewriter::{Config, Route, Source, SourceState};
+        let config: Config = serde_json::from_value(json!({
+                    "version": 2, "enabled": true,
+                    "routes": {
+                        "claudeDesktop": {
+                            "enabled": false,
+                            "system": {"mode": "replace", "enabled": false, "replacement": null},
+                            "userInstructions": {"mode": "replace", "enabled": false, "replacement": null, "sourcePath": null}
+                        },
+                        "claudeCode": {
+                            "enabled": true,
+                            "system": {"mode": "replace", "enabled": true, "replacement": "old-once"},
+                            "userInstructions": {"mode": "replace", "enabled": true, "replacement": "rewritten-file", "sourcePath": null}
+                        }
+                    }
+                }))
+                .unwrap();
+        let failed_body = Arc::new(Mutex::new(Value::Null));
+        let app = {
+            let failed_body = failed_body.clone();
+            axum::Router::new().fallback(move |body: Bytes| {
+                let failed_body = failed_body.clone();
+                async move {
+                    *failed_body.lock().await = serde_json::from_slice(&body).unwrap();
+                    (StatusCode::INTERNAL_SERVER_ERROR, "temporary failure")
+                }
+            })
+        };
+        let failed = Upstream {
+            base_url: serve_upstream(app).await,
+            seen: Arc::new(Mutex::new(Vec::new())),
+        };
+        let success = upstream().await;
+        let mut request = claude_request();
+        request["system"] = json!("old");
+        let source = Source {
+            path: Some("C:/fixture/.claude/CLAUDE.md".into()),
+            content: Some(String::new()),
+            state: SourceState::Ready,
+            error: None,
+            loaded_at: Some(1),
+        };
+        let rewrite =
+            RewriteContext::for_test_with_source(config, Route::ClaudeCode, source).unwrap();
+        let mut fwd = forwarder(false).prompt_rewrite(Some(rewrite));
+        fwd.max_attempts = 2;
+        fwd.forward_with_retry(
+            &AppType::Claude,
+            http::Method::POST,
+            "/v1/messages",
+            &request,
+            HeaderMap::new(),
+            Extensions::new(),
+            &[
+                claude_provider(&failed, "openai_responses"),
+                claude_provider(&success, "openai_chat"),
+            ],
+        )
+        .await
+        .map_err(|error| error.error)
+        .expect("failover succeeds");
+        let seen = success.seen.lock().await.pop().unwrap();
+        for wire in [failed_body.lock().await.to_string(), seen.body.to_string()] {
+            assert!(wire.contains("\"hi\""), "{wire}");
+            // No envelope is present, so the file target never adds a message on any attempt.
+            assert_eq!(wire.matches("rewritten-file").count(), 0, "{wire}");
+            assert!(wire.contains("old-once"), "{wire}");
+            assert!(!wire.contains("-once-once"), "{wire}");
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_rewriter_preserves_provider_user_overrides() {
+        let upstream = upstream().await;
+        let request = claude_request();
+        let rewrite = rewrite_context();
+        let mut provider = claude_provider(&upstream, "openai_responses");
+        provider
+            .meta
+            .as_mut()
+            .unwrap()
+            .local_proxy_request_overrides = Some(crate::provider::LocalProxyRequestOverrides {
+            body: Some(json!({ "input": "provider-user" })),
+            ..Default::default()
+        });
+        let fwd = forwarder(false).prompt_rewrite(Some(rewrite));
+        fwd.forward_with_retry(
+            &AppType::Claude,
+            http::Method::POST,
+            "/v1/messages",
+            &request,
+            HeaderMap::new(),
+            Extensions::new(),
+            &[provider],
+        )
+        .await
+        .map_err(|error| error.error)
+        .expect("forward");
+        let seen = upstream.seen.lock().await.pop().unwrap();
+        assert_eq!(seen.body["input"], "provider-user");
+        assert_eq!(seen.body["instructions"], "rewritten-system");
+        assert!(!seen.body.to_string().contains("rewritten-file"));
+    }
+
+    fn claude_request() -> Value {
+        json!({
+            "model":"listed", "max_tokens":32, "stream":false,
+            "system":"original-system",
+            "messages":[{"role":"user","content":"hi"}]
+        })
+    }
+
+    fn rewrite_context() -> RewriteContext {
+        rewrite_context_for(crate::extensions::prompt_rewriter::Route::ClaudeCode)
+    }
+
+    fn rewrite_context_for(route: crate::extensions::prompt_rewriter::Route) -> RewriteContext {
+        use crate::extensions::prompt_rewriter::Config;
+        let route_config = json!({
+            "enabled": true,
+            "system": {"enabled": true, "mode": "replace", "replacement": "rewritten-system"},
+            "userInstructions": {
+                "enabled": false, "mode": "replace", "replacement": "rewritten-file", "sourcePath": null
+            }
+        });
+        let config: Config = serde_json::from_value(json!({
+            "version": 2,
+            "enabled": true,
+            "routes": { "claudeCode": route_config, "claudeDesktop": route_config }
+        }))
+        .unwrap();
+        RewriteContext::for_test(config, route).unwrap()
+    }
+
+    fn claude_provider(upstream: &Upstream, api_format: &str) -> Provider {
+        let mut provider = test_provider_with_type(None);
+        provider.id = format!("claude-{api_format}");
+        provider.settings_config = json!({"env": {
+            "ANTHROPIC_BASE_URL": upstream.base_url,
+            "ANTHROPIC_AUTH_TOKEN": "sk-local-mock"
+        }});
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some(api_format.into()),
+            claude_desktop_model_routes: [(
+                "listed".into(),
+                crate::provider::ClaudeDesktopModelRoute {
+                    model: "listed".into(),
+                    label_override: None,
+                    supports_1m: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        });
+        provider
     }
 }
