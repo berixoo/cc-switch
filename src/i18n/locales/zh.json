@@ -35,7 +35,7 @@
     },
     "appendPosition": "追加位置",
     "positions": {
-      "start": "开头（头部之后）",
+      "start": "未缓存部分的开头",
       "end": "结尾"
     },
     "applyMode": "应用方式",
@@ -45,6 +45,8 @@
     },
     "stripSafetyNotice": "移除内置安全声明",
     "stripSafetyNoticeHint": "应用前删除客户端自带的安全测试授权段落，其他内容不动。",
+    "codeOnly": "只改写 Claude Code",
+    "codeOnlyHint": "桌面端的 Cowork 请求原样放行。Cowork 用自己的基座提示词，只改写 Claude Code 的请求。",
     "replacements": {
       "system": "系统替换全文",
       "userInstructions": "指令文件替换全文"

@@ -38,7 +38,7 @@
     },
     "appendPosition": "附加位置",
     "positions": {
-      "start": "開頭（標頭之後）",
+      "start": "未快取部分的開頭",
       "end": "結尾"
     },
     "applyMode": "套用方式",
@@ -48,6 +48,8 @@
     },
     "stripSafetyNotice": "移除內建安全聲明",
     "stripSafetyNoticeHint": "套用前刪除用戶端自帶的「安全測試授權」段落，其他內容不動。",
+    "codeOnly": "只改寫 Claude Code",
+    "codeOnlyHint": "桌面端的 Cowork 請求原樣放行。Cowork 使用自己的基座提示詞，只改寫 Claude Code 的請求。",
     "replacements": {
       "system": "系統替換全文",
       "userInstructions": "指令檔替換全文"

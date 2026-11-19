@@ -38,7 +38,7 @@
     },
     "appendPosition": "Append position",
     "positions": {
-      "start": "Beginning (after header)",
+      "start": "Beginning of the uncached part",
       "end": "End"
     },
     "applyMode": "Application mode",
@@ -48,6 +48,8 @@
     },
     "stripSafetyNotice": "Remove built-in security notice",
     "stripSafetyNoticeHint": "Drops the built-in authorized-security-testing paragraph before applying. Leaves other text untouched.",
+    "codeOnly": "Claude Code only",
+    "codeOnlyHint": "Leaves the desktop app's Cowork requests untouched. Cowork uses its own base prompt; only Claude Code requests are rewritten.",
     "replacements": {
       "system": "System replacement (full text)",
       "userInstructions": "Instruction file replacement (full text)"

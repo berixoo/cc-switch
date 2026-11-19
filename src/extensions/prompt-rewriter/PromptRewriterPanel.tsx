@@ -524,6 +524,30 @@ export function PromptRewriterPanel() {
             }}
           />
         )}
+        {editor === "system" && route === "claudeDesktop" && (
+          <SettingsSwitchRow
+            label={t("promptRewriter.codeOnly")}
+            description={t("promptRewriter.codeOnlyHint")}
+            disabled={!draft.enabled}
+            checked={draft.routes[route].system.codeOnly === true}
+            onCheckedChange={(codeOnly) => {
+              if (!draft) return;
+              toggle({
+                ...draft,
+                routes: {
+                  ...draft.routes,
+                  [route]: {
+                    ...draft.routes[route],
+                    system: {
+                      ...draft.routes[route].system,
+                      codeOnly,
+                    },
+                  },
+                },
+              });
+            }}
+          />
+        )}
         <label className="block space-y-1.5 text-body text-fg-1">
           <span>{t(`promptRewriter.replacements.${editor}`)}</span>
           <Textarea

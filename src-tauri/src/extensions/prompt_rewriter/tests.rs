@@ -10,6 +10,7 @@ fn config(system: Option<&str>, user: Option<&str>) -> Config {
             mode: ApplyMode::Replace,
             position: AppendPosition::End,
             strip_safety_notice: false,
+            code_only: false,
             replacement: system.map(str::to_string),
         },
         user_instructions: UserInstructionsConfig {
@@ -563,7 +564,7 @@ fn stripping_is_off_by_default_and_never_touches_other_text() {
 
 #[test]
 fn schema_v2_is_exact_all_defaults_off_and_every_nested_object_rejects_unknown_fields() {
-    let target = json!({"enabled":false,"mode":"append","position":"end","replacement":null,"stripSafetyNotice":false});
+    let target = json!({"enabled":false,"mode":"append","position":"end","replacement":null,"stripSafetyNotice":false,"codeOnly":false});
     let user = json!({"enabled":false,"mode":"append","position":"end","replacement":null,"sourcePath":null});
     let route = json!({"enabled":false,"system":target,"userInstructions":user});
     let expected =
@@ -2902,4 +2903,183 @@ fn stripping_never_touches_a_carried_file_envelope() {
         "notice kept: {system}"
     );
     assert!(system.contains("Header."), "prose lost: {system}");
+}
+
+#[test]
+fn plain_string_system_array_is_rewritten() {
+    let source = source(Route::ClaudeCode);
+    // The desktop client sends `system` as plain strings split at the cache boundary, with no
+    // `type` field. Before this was handled the entire array was skipped.
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    let body = json!({
+        "system": ["STATIC BASE", "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", "DYNAMIC PART"],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let system = preview.body["system"].as_array().unwrap();
+    assert!(preview.system_applied, "not applied");
+    // Default position is End, so the anchor gains the text after its own content.
+    assert_eq!(
+        system[0].as_str(),
+        Some("STATIC BASE\nOURS"),
+        "anchor should be the first carrier in End mode: {system:?}"
+    );
+    assert_eq!(
+        system[1].as_str(),
+        Some("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"),
+        "boundary must survive: {system:?}"
+    );
+    assert_eq!(
+        system[2].as_str(),
+        Some("DYNAMIC PART"),
+        "dynamic part lost: {system:?}"
+    );
+}
+
+#[test]
+fn cache_boundary_marker_survives_byte_for_byte() {
+    let source = source(Route::ClaudeCode);
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    cfg.routes.claude_code.system.position = AppendPosition::Start;
+    let body = json!({
+        "system": ["STATIC BASE", "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", "DYNAMIC PART"],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let system = preview.body["system"].as_array().unwrap();
+    let boundary = system
+        .iter()
+        .position(|v| v.as_str() == Some("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"));
+    assert!(boundary.is_some(), "boundary marker destroyed: {system:?}");
+    // Everything before the marker is the client's cacheable prefix and must be untouched.
+    for block in &system[..boundary.unwrap()] {
+        assert_eq!(block.as_str(), Some("STATIC BASE"), "prefix rewritten");
+    }
+    let joined = preview.body["system"].to_string();
+    assert!(joined.contains("OURS"), "replacement lost: {joined}");
+}
+
+#[test]
+fn start_position_anchors_after_the_cached_prefix() {
+    let source = source(Route::ClaudeCode);
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    cfg.routes.claude_code.system.position = AppendPosition::Start;
+    // Two plain carriers, no marker: the anchor must be the last one so the first stays cacheable.
+    let body = json!({
+        "system": ["STATIC BASE", "DYNAMIC PART"],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let system = preview.body["system"].as_array().unwrap();
+    assert_eq!(
+        system[0].as_str(),
+        Some("STATIC BASE"),
+        "cached prefix was rewritten: {system:?}"
+    );
+    let dynamic = system[1].as_str().unwrap();
+    assert!(
+        dynamic.starts_with("OURS"),
+        "anchor should prepend inside the dynamic block: {dynamic}"
+    );
+}
+
+#[test]
+fn boundary_and_file_envelope_coexist() {
+    let source = source(Route::ClaudeDesktop);
+    let mut cfg = config(Some("OURS"), Some("REPLACED FILE"));
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    let env = envelope(Route::ClaudeDesktop, &source);
+    // Real desktop shape: static base, cache boundary, then the dynamic tail carrying the
+    // global-instruction envelope.
+    let body = json!({
+        "system": ["STATIC BASE", "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", format!("Preamble.\n{env}")],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    let system = preview.body["system"].to_string();
+    assert!(
+        system.contains("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"),
+        "boundary lost: {system}"
+    );
+    assert!(system.contains("STATIC BASE"), "static lost: {system}");
+    assert!(
+        system.contains("REPLACED FILE"),
+        "file replacement skipped: {system}"
+    );
+    assert!(
+        system.contains("OURS"),
+        "system replacement skipped: {system}"
+    );
+}
+
+#[test]
+fn code_only_leaves_cowork_untouched() {
+    let source = source(Route::ClaudeDesktop);
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    cfg.routes.claude_desktop.system.code_only = true;
+    // Cowork's base prompt starts with this tag; Claude Code's preset never contains it.
+    let body = json!({
+        "system": ["<application_details>\nClaude is operating as an agent inside the Claude desktop app."],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    let system = preview.body["system"].to_string();
+    assert!(!system.contains("OURS"), "cowork was rewritten: {system}");
+    assert!(!preview.system_applied, "should not report applied");
+    assert!(
+        preview
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("Cowork")),
+        "reason should name Cowork: {:?}",
+        preview.reason
+    );
+}
+
+#[test]
+fn code_only_still_rewrites_code_requests() {
+    let source = source(Route::ClaudeDesktop);
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_desktop.system.mode = ApplyMode::Append;
+    cfg.routes.claude_desktop.system.code_only = true;
+    let body = json!({
+        "system": ["You are an agent working with the user toward their goals."],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(
+        cfg,
+        Route::ClaudeDesktop,
+        WireFormat::Anthropic,
+        &source,
+        body,
+    );
+    let system = preview.body["system"].to_string();
+    assert!(
+        system.contains("OURS"),
+        "code request not rewritten: {system}"
+    );
+    assert!(preview.system_applied);
+}
+
+#[test]
+fn code_only_is_off_by_default() {
+    let cfg = Config::default();
+    assert!(!cfg.routes.claude_desktop.system.code_only);
+    assert!(!cfg.routes.claude_code.system.code_only);
 }

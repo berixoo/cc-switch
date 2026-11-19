@@ -353,6 +353,12 @@ pub(crate) fn rewrite(
         return Ok(preview);
     }
     let config = snapshot.config.routes.get(route);
+    // Cowork and Code share the desktop route, so the switch is content-based: a request that
+    // carries the Cowork base prompt passes through untouched when code-only is set.
+    if config.system.code_only && adapters::is_cowork(&selection) {
+        preview.reason = Some("Cowork request left untouched (code-only enabled)".into());
+        return Ok(preview);
+    }
     let system_mode = config.system.mode;
     let system_position = config.system.position;
     let system = config
@@ -434,7 +440,23 @@ pub(crate) fn rewrite(
     let mut texts = Vec::with_capacity(selection.nodes.len());
     let mut inserted = false;
     let mut after_system = Vec::new();
-    for (node, spans) in selection.nodes.iter().zip(&spans) {
+    // Append at Start means "before the client's own instructions", not "before its cacheable
+    // prefix". Anchoring on the first system carrier would rewrite the static base that the
+    // prompt cache keys on and cost a full cache miss every turn. The last system carrier is the
+    // first one the client does not cache, so the edit lands there instead.
+    let anchor = if system_mode == ApplyMode::Append && system_position == AppendPosition::Start {
+        selection
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.system)
+            .map(|(index, _)| index)
+            .next_back()
+    } else {
+        None
+    };
+    for (index, (node, spans)) in selection.nodes.iter().zip(&spans).enumerate() {
+        let is_anchor = anchor.is_none_or(|anchor| anchor == index);
         // Strip the client's boilerplate from the text the client actually sent, before any
         // append or replace runs, and never from a carrier holding a file envelope.
         let stripped_source;
@@ -452,7 +474,7 @@ pub(crate) fn rewrite(
             let chunk = &node_text[offset..span.start];
             let chunk = if node.system {
                 if let Some(replacement) = system {
-                    if !inserted {
+                    if !inserted && is_anchor {
                         inserted = true;
                         apply(system_mode, system_position, chunk, replacement)
                     } else if system_mode == ApplyMode::Append {
@@ -491,7 +513,7 @@ pub(crate) fn rewrite(
         let suffix = &node_text[offset..];
         let suffix = if node.system {
             if let Some(replacement) = system {
-                if !inserted && (!suffix.is_empty() || spans.is_empty()) {
+                if !inserted && is_anchor && (!suffix.is_empty() || spans.is_empty()) {
                     inserted = true;
                     apply(system_mode, system_position, suffix, replacement)
                 } else if system_mode == ApplyMode::Append {
