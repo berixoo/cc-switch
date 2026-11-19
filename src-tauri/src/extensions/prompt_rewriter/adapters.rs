@@ -18,7 +18,15 @@ pub(crate) struct Selection {
     pub rejected_file_carriers: Vec<String>,
 }
 
-pub(super) const CLAUDE_GLOBAL_PREFIX: &str = "<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\nContents of ";
+pub(crate) const CLAUDE_GLOBAL_PREFIX: &str = "<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\nContents of ";
+
+/// Sentinel the client splits its system array on so the static prefix stays cacheable. It is a
+/// control token, not prose: rewriting it would silently disable prompt caching for every turn.
+pub(crate) const CACHE_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
+
+/// First tag of the desktop app's Cowork (3p) base prompt. That prompt is assembled app-side for
+/// Cowork and never appears in Claude Code requests, whose base comes from the CLI preset.
+pub(crate) const COWORK_MARKER: &str = "<application_details>";
 
 pub(crate) fn envelope_hint(text: &str) -> bool {
     text.starts_with("<system-reminder>\n")
@@ -48,6 +56,25 @@ fn content_nodes(body: &Value, path: &str, format: WireFormat, system: bool) -> 
         Some(Value::String(_)) => string_node(body, path, path, system, &mut nodes),
         Some(Value::Array(blocks)) => {
             for (index, block) in blocks.iter().enumerate() {
+                // The desktop client sends `system` as a plain `string[]` split at the prompt-cache
+                // boundary, not as typed blocks. A bare string element is a text carrier in every
+                // format; without this the whole array is skipped and nothing is ever rewritten.
+                // A boundary marker element is never a text carrier: it must survive byte-for-byte
+                // so the client's cache split still lines up with what it sent.
+                if block.is_string() && block.as_str() == Some(CACHE_BOUNDARY) {
+                    continue;
+                }
+                if block.is_string() {
+                    let remove = format!("{path}/{index}");
+                    nodes.push(TextNode {
+                        path: remove.clone(),
+                        remove_path: remove,
+                        text: block.as_str().unwrap_or_default().to_string(),
+                        system,
+                        message: None,
+                    });
+                    continue;
+                }
                 let recognized = match format {
                     WireFormat::Anthropic | WireFormat::Chat => block["type"] == "text",
                     WireFormat::Responses => {
@@ -199,6 +226,17 @@ fn messages(
         }
         nodes.extend(selected);
     }
+}
+
+/// True when the request carries the desktop app's Cowork (3p) base prompt. Detected on content,
+/// not on route: both the Code and Cowork surfaces arrive on the desktop route, so only the text
+/// tells them apart.
+pub(crate) fn is_cowork(selection: &Selection) -> bool {
+    selection
+        .nodes
+        .iter()
+        .filter(|node| node.system)
+        .any(|node| node.text.contains(COWORK_MARKER))
 }
 
 pub(crate) fn select(body: &Value, format: WireFormat) -> Result<Selection, String> {

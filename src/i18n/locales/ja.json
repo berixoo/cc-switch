@@ -38,7 +38,7 @@
     },
     "appendPosition": "追加位置",
     "positions": {
-      "start": "先頭（ヘッダーの後）",
+      "start": "キャッシュされない部分の先頭",
       "end": "末尾"
     },
     "applyMode": "適用方法",
@@ -48,6 +48,8 @@
     },
     "stripSafetyNotice": "組み込みのセキュリティ文言を削除",
     "stripSafetyNoticeHint": "適用前にクライアント標準の「セキュリティテスト許可」段落を削除します。他の文言は変更しません。",
+    "codeOnly": "Claude Code のみ",
+    "codeOnlyHint": "デスクトップアプリの Cowork リクエストはそのまま通します。Cowork は独自のベースプロンプトを使うため、Claude Code のリクエストだけを書き換えます。",
     "replacements": {
       "system": "システム置換全文",
       "userInstructions": "指示ファイル置換全文"

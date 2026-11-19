@@ -74,6 +74,10 @@ pub struct SystemConfig {
     /// the only policy in effect. Off by default.
     #[serde(default)]
     pub strip_safety_notice: bool,
+    /// Only rewrite requests that come from Claude Code, leaving the desktop app's Cowork
+    /// (3p) requests untouched. Off by default so existing configs keep their behaviour.
+    #[serde(default)]
+    pub code_only: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

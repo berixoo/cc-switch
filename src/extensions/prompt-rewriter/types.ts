@@ -20,6 +20,8 @@ export interface ReplacementConfig {
   position: AppendPosition;
   replacement: string | null;
   stripSafetyNotice: boolean;
+  /** Desktop route only: rewrite Claude Code requests and leave Cowork (3p) ones untouched. */
+  codeOnly?: boolean;
 }
 
 export interface RouteConfig {
