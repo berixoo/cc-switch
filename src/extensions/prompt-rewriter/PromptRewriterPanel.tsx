@@ -156,12 +156,13 @@ export function PromptRewriterPanel() {
   const cancelGet = () =>
     client.cancelQueries({ queryKey: promptRewriterKeys.status });
   const preview = useMutation({ mutationFn: promptRewriterApi.preview });
-  // The explicit save commits the prompt bodies; switch-only saves must keep the draft.
-  const explicitSave = useRef(false);
+  // Whether a save may release the draft travels with the call, not in shared state: two
+  // overlapping saves (a switch toggle right after Save) must not consume each other's flag.
   const save = useMutation({
-    mutationFn: promptRewriterApi.save,
+    mutationFn: ({ config }: { config: Config; clearDraft: boolean }) =>
+      promptRewriterApi.save(config),
     onMutate: cancelGet,
-    onSuccess: (result) => {
+    onSuccess: (result, variables) => {
       publish(result);
       if (result.error || !result.available) return;
       // Read the timestamp the write just produced; a stale read would report a false "saved".
@@ -169,8 +170,7 @@ export function PromptRewriterPanel() {
         client.getQueryState(promptRewriterKeys.status)?.dataUpdatedAt ?? null,
       );
       preview.reset();
-      if (explicitSave.current) {
-        explicitSave.current = false;
+      if (variables.clearDraft) {
         setDraft(null);
         setDraftOriginals(null);
       }
@@ -250,7 +250,7 @@ export function PromptRewriterPanel() {
     change(next);
     if (JSON.stringify(next) !== JSON.stringify(status.data?.config)) {
       // Keep the draft: a switch must not discard prompt text the user has not saved yet.
-      save.mutate(next);
+      save.mutate({ config: next, clearDraft: false });
     }
   };
   const perform = (action: Confirmation) => {
@@ -657,8 +657,7 @@ export function PromptRewriterPanel() {
                   disabled={!dirty && !status.data.error}
                   onClick={() => {
                     setSavedAt(null);
-                    explicitSave.current = true;
-                    save.mutate(draft);
+                    save.mutate({ config: draft, clearDraft: true });
                   }}
                 >
                   {t("promptRewriter.save")}

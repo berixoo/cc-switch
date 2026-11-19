@@ -2854,3 +2854,52 @@ fn unfeatured_commands_do_not_read_sources_or_write_extension_config() {
         .is_err());
     assert!(!path.exists());
 }
+
+#[test]
+fn append_keeps_every_system_block() {
+    let source = source(Route::ClaudeCode);
+    let mut cfg = config(Some("OURS"), None);
+    cfg.routes.claude_code.system.mode = ApplyMode::Append;
+    let body = json!({
+        "system": [
+            {"type": "text", "text": "Part A"},
+            {"type": "text", "text": "Part B"}
+        ],
+        "messages": [{"role": "user", "content": "chat"}]
+    });
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let joined = preview.body["system"].to_string();
+    assert!(joined.contains("Part A"), "A lost: {joined}");
+    assert!(joined.contains("Part B"), "B lost: {joined}");
+    assert!(joined.contains("OURS"), "replacement lost: {joined}");
+}
+
+#[test]
+fn stripping_never_touches_a_carried_file_envelope() {
+    let notice = "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.";
+    let source = Source {
+        path: Some("/home/me/.claude/CLAUDE.md".into()),
+        content: Some(notice.into()),
+        state: SourceState::Ready,
+        error: None,
+        loaded_at: Some(1),
+    };
+    let mut cfg = config(None, Some("REPLACED FILE"));
+    cfg.routes.claude_code.system.strip_safety_notice = true;
+    let wrapper = format!(
+        "<system-reminder>\nContents of /home/me/.claude/CLAUDE.md (user's private global instructions for all projects):\n\n{notice}\n</system-reminder>"
+    );
+    let body = json!({"system": format!("Header.\n{wrapper}"), "messages":[{"role":"user","content":"chat"}]});
+    let preview = run(cfg, Route::ClaudeCode, WireFormat::Anthropic, &source, body);
+    let system = preview.body["system"].as_str().unwrap();
+    // The envelope body is the user's file, so the file replacement must have applied.
+    assert!(
+        system.contains("REPLACED FILE"),
+        "file replacement skipped: {system}"
+    );
+    assert!(
+        !system.contains("defensive security"),
+        "notice kept: {system}"
+    );
+    assert!(system.contains("Header."), "prose lost: {system}");
+}
