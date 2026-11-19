@@ -46,11 +46,6 @@ use crate::commands::{CodexOAuthState, CopilotAuthState, XaiOAuthState};
 use crate::extensions::prompt_rewriter::RewriteContext;
 use crate::provider_kind::{is_copilot_url, ProviderKind};
 
-#[derive(Clone)]
-struct PromptIngressMetadata {
-    conversation_fingerprint: Option<String>,
-    classification: super::copilot_optimizer::CopilotClassification,
-}
 use crate::proxy::providers::copilot_auth::{CopilotAuthError, CopilotAuthManager};
 use crate::proxy::providers::copilot_model_map::{
     transport_for, CopilotProtocol, CopilotTransport, ResolvedCopilotModel,
@@ -374,25 +369,12 @@ impl RequestForwarder {
     fn rewrite_prompt_ingress(
         &self,
         body: &Value,
-        headers: &axum::http::HeaderMap,
-        extensions: &mut Extensions,
         providers: &[Provider],
     ) -> Result<Value, ForwardError> {
         let Some(rewrite) = &self.prompt_rewrite else {
             return Ok(body.clone());
         };
         let mut owned = body.clone();
-        if rewrite.system_enabled() || rewrite.user_instructions_enabled() {
-            extensions.insert(PromptIngressMetadata {
-                conversation_fingerprint: None,
-                classification: super::copilot_optimizer::classify_request(
-                    &owned,
-                    headers.contains_key("anthropic-beta"),
-                    self.copilot_optimizer_config.compact_detection,
-                    self.copilot_optimizer_config.subagent_detection,
-                ),
-            });
-        }
         rewrite
             .rewrite_ingress(&mut owned)
             .map_err(|error| ForwardError {
@@ -735,12 +717,12 @@ impl RequestForwarder {
         endpoint: &str,
         body: &Value,
         headers: axum::http::HeaderMap,
-        mut extensions: Extensions,
+        extensions: Extensions,
         providers: &[Provider],
     ) -> Result<ForwardResult, ForwardError> {
         let rewritten;
         let body = if self.prompt_rewrite.is_some() {
-            rewritten = self.rewrite_prompt_ingress(body, &headers, &mut extensions, providers)?;
+            rewritten = self.rewrite_prompt_ingress(body, providers)?;
             &rewritten
         } else {
             body

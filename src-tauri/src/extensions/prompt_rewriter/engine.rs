@@ -287,65 +287,6 @@ fn leading_header_end(text: &str) -> usize {
     offset
 }
 
-/// Remove the built-in safety notice from every system carrier in `body`.
-fn strip_from_system(body: &mut Value, format: WireFormat) {
-    let field = match format {
-        WireFormat::Anthropic => ("system", false),
-        WireFormat::Responses => ("instructions", true),
-        WireFormat::Chat => ("messages", false),
-        WireFormat::Gemini => ("systemInstruction", false),
-    };
-    match format {
-        WireFormat::Chat => {
-            let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-                return;
-            };
-            for message in messages.iter_mut() {
-                if matches!(message["role"].as_str(), Some("system" | "developer")) {
-                    strip_in_container(&mut message["content"]);
-                }
-            }
-        }
-        WireFormat::Gemini => {
-            if let Some(parts) = body
-                .get_mut("systemInstruction")
-                .and_then(|value| value.get_mut("parts"))
-            {
-                strip_in_container(parts);
-            }
-        }
-        _ => {
-            let (name, _) = field;
-            if let Some(slot) = body.get_mut(name) {
-                strip_in_container(slot);
-            }
-        }
-    }
-}
-
-/// Strip notices from a string-or-blocks container in place.
-fn strip_in_container(container: &mut Value) {
-    match container {
-        Value::String(text) => {
-            let (stripped, _) = super::safety_notice::strip_safety_notice(text);
-            if stripped != *text {
-                *text = stripped;
-            }
-        }
-        Value::Array(blocks) => {
-            for block in blocks.iter_mut() {
-                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    let (stripped, _) = super::safety_notice::strip_safety_notice(text);
-                    if stripped != text {
-                        block["text"] = Value::String(stripped);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(crate) fn rewrite(
     snapshot: &Snapshot,
     route: Route,
@@ -354,12 +295,7 @@ pub(crate) fn rewrite(
     body: Value,
 ) -> Result<Preview, String> {
     let strip_notice = snapshot.config.routes.get(route).system.strip_safety_notice;
-    // Removing the built-in notice changes what the client sent, so do it once up front and
-    // report it through the preview's before/after text.
-    let mut body = body;
-    if strip_notice {
-        strip_from_system(&mut body, format);
-    }
+    let body = body;
     let selection = adapters::select(&body, format)?;
     let mut spans: Vec<_> = selection
         .nodes
@@ -499,16 +435,29 @@ pub(crate) fn rewrite(
     let mut inserted = false;
     let mut after_system = Vec::new();
     for (node, spans) in selection.nodes.iter().zip(&spans) {
+        // Strip the client's boilerplate from the text the client actually sent, before any
+        // append or replace runs, and never from a carrier holding a file envelope.
+        let stripped_source;
+        let node_text =
+            if strip_notice && node.system && !spans.iter().any(|span| span.source_path_matched) {
+                stripped_source = super::safety_notice::strip_safety_notice(&node.text).0;
+                stripped_source.as_str()
+            } else {
+                node.text.as_str()
+            };
         let mut rewritten = String::new();
         let mut body_only = String::new();
         let mut offset = 0;
         for span in spans {
-            let chunk = &node.text[offset..span.start];
+            let chunk = &node_text[offset..span.start];
             let chunk = if node.system {
                 if let Some(replacement) = system {
                     if !inserted {
                         inserted = true;
                         apply(system_mode, system_position, chunk, replacement)
+                    } else if system_mode == ApplyMode::Append {
+                        // Append keeps every carrier; only the anchor gains the extra text.
+                        chunk.to_string()
                     } else if offset > 0 && chunk.trim().is_empty() {
                         chunk.to_string()
                     } else {
@@ -530,21 +479,24 @@ pub(crate) fn rewrite(
             }
             body_only.push_str(&chunk);
             if let Some(replacement) = user.filter(|_| targetable(span)) {
-                let original = &node.text[span.content_start..span.content_end];
-                rewritten.push_str(&node.text[span.start..span.content_start]);
+                let original = &node_text[span.content_start..span.content_end];
+                rewritten.push_str(&node_text[span.start..span.content_start]);
                 rewritten.push_str(&apply(user_mode, user_position, original, replacement));
-                rewritten.push_str(&node.text[span.content_end..span.end]);
+                rewritten.push_str(&node_text[span.content_end..span.end]);
             } else {
-                rewritten.push_str(&node.text[span.start..span.end]);
+                rewritten.push_str(&node_text[span.start..span.end]);
             }
             offset = span.end;
         }
-        let suffix = &node.text[offset..];
+        let suffix = &node_text[offset..];
         let suffix = if node.system {
             if let Some(replacement) = system {
                 if !inserted && (!suffix.is_empty() || spans.is_empty()) {
                     inserted = true;
                     apply(system_mode, system_position, suffix, replacement)
+                } else if system_mode == ApplyMode::Append {
+                    // Append never drops a carrier's own text.
+                    suffix.to_string()
                 } else {
                     String::new()
                 }
